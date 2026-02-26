@@ -240,6 +240,112 @@ function normalizeMatches(matches) {
   }));
 }
 
+function normalizeText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenSet(text) {
+  return new Set(
+    normalizeText(text)
+      .split(" ")
+      .filter((t) => t.length > 2 && !["scheme", "for", "with", "and", "the", "of", "to", "in"].includes(t))
+  );
+}
+
+function findFocusedScheme(question, candidateMatches) {
+  const qNorm = normalizeText(question);
+  const qTokens = tokenSet(question);
+  const detailIntent =
+    /(more|detail|about|apply|application|process|how to|how do|documents|eligibility|link|website|form)/i.test(
+      question
+    );
+
+  let best = null;
+  let bestScore = 0;
+
+  for (const match of normalizeMatches(candidateMatches)) {
+    const nameNorm = normalizeText(match.name);
+    const nameTokens = tokenSet(match.name);
+    const overlap = [...nameTokens].filter((t) => qTokens.has(t)).length;
+    const overlapRatio = nameTokens.size ? overlap / nameTokens.size : 0;
+
+    let score = 0;
+    if (nameNorm && qNorm.includes(nameNorm)) score += 100;
+    score += overlap * 10 + overlapRatio * 20;
+    if (detailIntent) score += 5;
+
+    if (score > bestScore) {
+      best = match;
+      bestScore = score;
+    }
+  }
+
+  if (!best) return null;
+  if (bestScore >= 20) return best;
+  if (detailIntent && bestScore >= 10) return best;
+  return null;
+}
+
+function extractLinks(rawJson) {
+  const text = JSON.stringify(rawJson || "");
+  const links = text.match(/https?:\/\/[^\s"\\]+/g) || [];
+  return [...new Set(links)].slice(0, 5);
+}
+
+function buildFocusedContext(match) {
+  const raw = match.raw_json?.data?.en || {};
+  let description = raw.schemeContent?.briefDescription || raw.schemeContent?.schemeContent || "";
+  let eligibility = raw.eligibilityCriteria?.eligibilityDescription_md || raw.eligibilityCriteria?.description || "";
+  let benefits = raw.schemeBenefits?.benefits || raw.schemeBenefits?.description || "";
+  let documents = raw.documentsRequired || raw.requiredDocuments || raw.eligibilityCriteria?.documentsRequired || "";
+  let applyOnline = raw.howToApply?.onlineApplication || raw.howToApply?.online || raw.applicationProcess?.online || "";
+  let applyOffline = raw.howToApply?.offlineApplication || raw.howToApply?.offline || raw.applicationProcess?.offline || "";
+  let contact = raw.contactDetails || raw.contact || raw.helpline || "";
+
+  if (typeof description !== "string") description = JSON.stringify(description);
+  if (typeof eligibility !== "string") eligibility = JSON.stringify(eligibility);
+  if (typeof benefits !== "string") benefits = JSON.stringify(benefits);
+  if (typeof documents !== "string") documents = JSON.stringify(documents);
+  if (typeof applyOnline !== "string") applyOnline = JSON.stringify(applyOnline);
+  if (typeof applyOffline !== "string") applyOffline = JSON.stringify(applyOffline);
+  if (typeof contact !== "string") contact = JSON.stringify(contact);
+
+  const links = extractLinks(raw).join("\n") || "Not found";
+
+  return `Focused Scheme Detail
+Name: ${match.name}
+Eligibility Probability: ${match.eligibilityProbability || "N/A"}%
+
+Description:
+${description.slice(0, 1000)}
+
+Eligibility:
+${eligibility.slice(0, 1000)}
+
+Benefits:
+${benefits.slice(0, 800)}
+
+Documents Required:
+${documents.slice(0, 800) || "Not found"}
+
+How To Apply Online:
+${applyOnline.slice(0, 800) || "Not found"}
+
+How To Apply Offline:
+${applyOffline.slice(0, 800) || "Not found"}
+
+Contact/Helpline:
+${contact.slice(0, 500) || "Not found"}
+
+Useful Links:
+${links}
+`;
+}
+
 function rankMatches(matches, profile) {
   const scored = normalizeMatches(matches).map((m) => scoreMatch(m, profile));
   const keep = scored.filter((m) => !m.hardReject);
@@ -277,15 +383,49 @@ app.post("/chat", async (req, res) => {
     const mergedProfile = mergeProfile(session.profile || {}, extractProfile(question));
     session.profile = mergedProfile;
     session.updatedAt = Date.now();
+    const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
 
     console.log("\n------------------------------");
     console.log("Session:", sessionId);
     console.log("User question:", question);
 
+    const focusedFromHistory = findFocusedScheme(question, previousMatches);
+    if (focusedFromHistory) {
+      const focusedRanked = scoreMatch(focusedFromHistory, mergedProfile);
+      const focusedContext = buildFocusedContext(focusedRanked);
+      const answer = await generateChatResponse(
+        question,
+        focusedContext,
+        profileText(mergedProfile),
+        null,
+        "focused"
+      );
+
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer,
+        selectedScheme: focusedRanked.name,
+        matches: [
+          {
+            slug: focusedRanked.slug || null,
+            name: focusedRanked.name,
+            similarity: Number(focusedRanked.similarity || 0),
+            semanticScore: Number(focusedRanked.semanticScore.toFixed(2)),
+            ruleScore: focusedRanked.ruleScore,
+            finalScore: Number(focusedRanked.finalScore.toFixed(2)),
+            eligibilityProbability: focusedRanked.eligibilityProbability,
+          },
+        ],
+      });
+    }
+
     const query = `${question}\n\nKnown profile: ${profileText(mergedProfile)}`;
     const embedding = await generateEmbedding(query);
     let matches = await searchSchemes(embedding);
     matches = rankMatches(matches, mergedProfile);
+    session.lastMatches = matches.slice(0, 10);
 
     const nextQuestion = getNextQuestion(mergedProfile);
 
@@ -301,7 +441,38 @@ app.post("/chat", async (req, res) => {
     }
 
     const context = buildContext(matches);
-    const answer = await generateChatResponse(question, context, profileText(mergedProfile), nextQuestion);
+    const focusedFromCurrent = findFocusedScheme(question, matches);
+    if (focusedFromCurrent) {
+      const focusedContext = buildFocusedContext(focusedFromCurrent);
+      const answer = await generateChatResponse(
+        question,
+        focusedContext,
+        profileText(mergedProfile),
+        null,
+        "focused"
+      );
+
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer,
+        selectedScheme: focusedFromCurrent.name,
+        matches: [
+          {
+            slug: focusedFromCurrent.slug || null,
+            name: focusedFromCurrent.name,
+            similarity: focusedFromCurrent.similarity,
+            semanticScore: Number(focusedFromCurrent.semanticScore.toFixed(2)),
+            ruleScore: focusedFromCurrent.ruleScore,
+            finalScore: Number(focusedFromCurrent.finalScore.toFixed(2)),
+            eligibilityProbability: focusedFromCurrent.eligibilityProbability,
+          },
+        ],
+      });
+    }
+
+    const answer = await generateChatResponse(question, context, profileText(mergedProfile), nextQuestion, "list");
 
     return res.json({
       sessionId,
