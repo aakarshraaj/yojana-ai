@@ -240,6 +240,11 @@ function isStateScheme(text) {
   );
 }
 
+function extractMentionedStates(text) {
+  const lower = text.toLowerCase();
+  return STATES.filter((state) => lower.includes(state));
+}
+
 function evaluateIncome(profile, schemeText) {
   if (profile.incomeAnnual == null) return { score: 0, hardReject: false, reason: null };
 
@@ -283,14 +288,22 @@ function scoreMatch(match, profile) {
   let ruleScore = 0;
   const reasons = [];
   let hardReject = false;
+  const isCentral = isCentralScheme(rawText);
+  const mentionedStates = extractMentionedStates(rawText);
 
   if (profile.state) {
     if (lowerText.includes(profile.state)) {
       ruleScore += 20;
       reasons.push("state match +20");
-    } else if (isCentralScheme(rawText)) {
+    } else if (isCentral) {
       ruleScore += 4;
       reasons.push("central fallback +4");
+    }
+
+    if (!isCentral && mentionedStates.length > 0 && !mentionedStates.includes(profile.state)) {
+      hardReject = true;
+      reasons.push("hard reject: explicit different state scheme");
+      ruleScore -= 30;
     }
   }
 
@@ -314,7 +327,7 @@ function scoreMatch(match, profile) {
   hardReject = hardReject || incomeScore.hardReject;
 
   if (profile.schemePreference === "central") {
-    if (isCentralScheme(rawText)) {
+    if (isCentral) {
       ruleScore += 15;
       reasons.push("central preference +15");
     } else {
