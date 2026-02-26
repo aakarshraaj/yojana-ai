@@ -88,20 +88,18 @@ app.post("/chat", async (req, res) => {
      */
     const detectedState = extractStateFromQuestion(question);
 
-    if (detectedState) {
-      matches = matches.sort((a, b) => {
-        const aText = JSON.stringify(a.raw_json || "").toLowerCase();
-        const bText = JSON.stringify(b.raw_json || "").toLowerCase();
+   if (detectedState) {
+  const stateFilteredMatches = matches.filter((m) => {
+    const rawText = JSON.stringify(m.raw_json || "").toLowerCase();
+    return rawText.includes(detectedState);
+  });
 
-        const aHasState = aText.includes(detectedState);
-        const bHasState = bText.includes(detectedState);
-
-        if (aHasState && !bHasState) return -1;
-        if (!aHasState && bHasState) return 1;
-
-        return b.similarity - a.similarity;
-      });
-    }
+  // If we found schemes specific to the detected state,
+  // use ONLY those. Otherwise fallback to original matches.
+  if (stateFilteredMatches.length > 0) {
+    matches = stateFilteredMatches;
+  }
+}
 
     /**
      * 4️⃣ Build structured context for GPT
