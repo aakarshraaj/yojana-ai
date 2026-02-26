@@ -3,11 +3,15 @@ const express = require("express");
 const { generateEmbedding, generateChatResponse } = require("./lib/openai");
 const { searchSchemes } = require("./lib/supabase");
 
-const requiredEnv = ['OPENAI_API_KEY', 'SUPABASE_URL', 'SUPABASE_KEY'];
-const missingEnv = requiredEnv.filter(k => !process.env[k]);
+/**
+ * Validate required environment variables
+ */
+const requiredEnv = ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
+const missingEnv = requiredEnv.filter((k) => !process.env[k]);
+
 if (missingEnv.length) {
-  console.error('Missing required env vars:', missingEnv.join(', '));
-  console.error('Check your .env or environment and restart the server.');
+  console.error("Missing required env vars:", missingEnv.join(", "));
+  process.exit(1);
 }
 
 const app = express();
@@ -19,6 +23,29 @@ app.use(express.json({ limit: "1mb" }));
 app.get("/", (req, res) => {
   res.json({ status: "yojana-ai running" });
 });
+
+/**
+ * Utility: Extract state mention from question
+ */
+function extractStateFromQuestion(question) {
+  const states = [
+    "maharashtra",
+    "gujarat",
+    "karnataka",
+    "rajasthan",
+    "uttar pradesh",
+    "madhya pradesh",
+    "bihar",
+    "meghalaya",
+    "tamil nadu",
+    "kerala",
+    "punjab",
+    "haryana",
+  ];
+
+  const lower = question.toLowerCase();
+  return states.find((s) => lower.includes(s)) || null;
+}
 
 /**
  * Chat endpoint
@@ -33,20 +60,20 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    console.log("\n-----------------------------------");
+    console.log("\n------------------------------");
     console.log("User question:", question);
 
     /**
-     * 1️⃣ Generate embedding for question
+     * 1️⃣ Generate embedding
      */
     const embedding = await generateEmbedding(question);
-    console.log("Embedding produced. length:", Array.isArray(embedding) ? embedding.length : typeof embedding);
+    console.log("Embedding length:", embedding.length);
 
     /**
-     * 2️⃣ Search vector database
+     * 2️⃣ Vector search
      */
-    const matches = await searchSchemes(embedding);
-    console.log("Matches returned:", Array.isArray(matches) ? matches.length : typeof matches);
+    let matches = await searchSchemes(embedding);
+    console.log("Matches returned:", matches.length);
 
     if (!matches || matches.length === 0) {
       return res.json({
@@ -56,49 +83,63 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    console.log("Top matches:");
-    matches.forEach(m =>
-      console.log(`- ${m.name} (${m.similarity.toFixed(3)})`)
-    );
+    /**
+     * 3️⃣ Prioritize state-specific matches
+     */
+    const detectedState = extractStateFromQuestion(question);
+
+    if (detectedState) {
+      matches = matches.sort((a, b) => {
+        const aText = JSON.stringify(a.raw_json || "").toLowerCase();
+        const bText = JSON.stringify(b.raw_json || "").toLowerCase();
+
+        const aHasState = aText.includes(detectedState);
+        const bHasState = bText.includes(detectedState);
+
+        if (aHasState && !bHasState) return -1;
+        if (!aHasState && bHasState) return 1;
+
+        return b.similarity - a.similarity;
+      });
+    }
 
     /**
-     * 3️⃣ Build STRONG structured context
+     * 4️⃣ Build structured context for GPT
      */
-    const context = matches.map((m, index) => {
-      let raw = m.raw_json?.data?.en || {};
+    const context = matches
+      .map((m, index) => {
+        let raw = m.raw_json?.data?.en || {};
 
-      let description =
-        raw.schemeContent?.briefDescription ||
-        raw.schemeContent?.schemeContent ||
-        "";
+        let description =
+          raw.schemeContent?.briefDescription ||
+          raw.schemeContent?.schemeContent ||
+          "";
 
-      let eligibility =
-        raw.eligibilityCriteria?.eligibilityDescription_md ||
-        raw.eligibilityCriteria?.description ||
-        "";
+        let eligibility =
+          raw.eligibilityCriteria?.eligibilityDescription_md ||
+          raw.eligibilityCriteria?.description ||
+          "";
 
-      let benefits =
-        raw.schemeBenefits?.benefits ||
-        raw.schemeBenefits?.description ||
-        "";
+        let benefits =
+          raw.schemeBenefits?.benefits ||
+          raw.schemeBenefits?.description ||
+          "";
 
-      // Ensure strings
-      if (typeof description !== "string")
-        description = JSON.stringify(description);
-      if (typeof eligibility !== "string")
-        eligibility = JSON.stringify(eligibility);
-      if (typeof benefits !== "string")
-        benefits = JSON.stringify(benefits);
+        if (typeof description !== "string")
+          description = JSON.stringify(description);
+        if (typeof eligibility !== "string")
+          eligibility = JSON.stringify(eligibility);
+        if (typeof benefits !== "string")
+          benefits = JSON.stringify(benefits);
 
-      // Trim to avoid token overload
-      description = description.slice(0, 800);
-      eligibility = eligibility.slice(0, 500);
-      benefits = benefits.slice(0, 500);
+        description = description.slice(0, 700);
+        eligibility = eligibility.slice(0, 400);
+        benefits = benefits.slice(0, 400);
 
-      return `
-Scheme ${index + 1}:
+        return `
+Scheme ${index + 1}
 Name: ${m.name}
-Relevance Score: ${m.similarity.toFixed(2)}
+Similarity Score: ${m.similarity.toFixed(2)}
 
 Description:
 ${description}
@@ -109,16 +150,17 @@ ${eligibility}
 Benefits:
 ${benefits}
 `;
-    }).join("\n");
+      })
+      .join("\n---------------------------------\n");
 
     /**
-     * 4️⃣ Generate AI response
+     * 5️⃣ Generate AI response
      */
     const answer = await generateChatResponse(question, context);
 
     return res.json({
       answer,
-      matches: matches.map(m => ({
+      matches: matches.map((m) => ({
         name: m.name,
         similarity: m.similarity,
       })),
@@ -126,20 +168,19 @@ ${benefits}
 
   } catch (err) {
     console.error("FULL ERROR DUMP:");
-    console.error(err && err.stack ? err.stack : err);
+    console.error(err?.stack || err);
 
-    const payload = { error: err && err.message ? err.message : "Internal server error" };
-    if (process.env.NODE_ENV === 'development') payload.details = err && err.stack ? err.stack : null;
-
-    return res.status(500).json(payload);
+    return res.status(500).json({
+      error: "Internal server error",
+    });
   }
 });
 
 /**
- * Railway dynamic port or fallback
+ * Railway dynamic port
  */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Yojana AI running on port ${PORT}`);
+  console.log(`Yojana AI running on port ${PORT}`);
 });
