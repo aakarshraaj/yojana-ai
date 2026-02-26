@@ -50,8 +50,29 @@ const PROFESSION_KEYWORDS = {
   disabled: ["disabled", "disability", "divyang"],
 };
 
+const CASTE_CATEGORY_KEYWORDS = {
+  sc: ["sc", "scheduled caste"],
+  st: ["st", "scheduled tribe", "tribal"],
+  obc: ["obc", "other backward class", "backward class"],
+  ews: ["ews", "economically weaker section"],
+  minority: ["minority"],
+  general: ["general category", "open category"],
+};
+
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
 const sessionMemory = new Map();
+
+function escapeRegex(input) {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasKeyword(text, keyword) {
+  if (keyword.length <= 3) {
+    const pattern = new RegExp(`\\b${escapeRegex(keyword)}\\b`, "i");
+    return pattern.test(text);
+  }
+  return text.toLowerCase().includes(keyword.toLowerCase());
+}
 
 /**
  * Validate required environment variables
@@ -163,6 +184,15 @@ function extractSchemePreference(text) {
   return null;
 }
 
+function extractCasteCategory(text) {
+  for (const [category, keywords] of Object.entries(CASTE_CATEGORY_KEYWORDS)) {
+    if (keywords.some((keyword) => hasKeyword(text, keyword))) {
+      return category;
+    }
+  }
+  return null;
+}
+
 function extractProfileFromText(text) {
   return {
     state: extractState(text),
@@ -170,6 +200,7 @@ function extractProfileFromText(text) {
     incomeAnnual: extractIncome(text),
     landAcres: extractLandAcres(text),
     schemePreference: extractSchemePreference(text),
+    casteCategory: extractCasteCategory(text),
   };
 }
 
@@ -180,13 +211,19 @@ function mergeProfile(existing, incoming) {
     incomeAnnual: incoming.incomeAnnual != null ? incoming.incomeAnnual : existing.incomeAnnual ?? null,
     landAcres: incoming.landAcres != null ? incoming.landAcres : existing.landAcres ?? null,
     schemePreference: incoming.schemePreference || existing.schemePreference || null,
+    casteCategory: incoming.casteCategory || existing.casteCategory || null,
   };
 }
 
 function hasAnyProfile(profile) {
-  return [profile.state, profile.profession, profile.incomeAnnual, profile.landAcres, profile.schemePreference].some(
-    (v) => v != null
-  );
+  return [
+    profile.state,
+    profile.profession,
+    profile.incomeAnnual,
+    profile.landAcres,
+    profile.schemePreference,
+    profile.casteCategory,
+  ].some((v) => v != null);
 }
 
 function extractUpperBoundMoney(text) {
@@ -257,10 +294,10 @@ function evaluateIncome(profile, schemeText) {
   }
 
   if (profile.incomeAnnual <= maxIncome) {
-    return { score: 12, hardReject: false, reason: `income <= ${maxIncome}` };
+    return { score: 25, hardReject: false, reason: `income <= ${maxIncome}` };
   }
 
-  return { score: -20, hardReject: true, reason: `income above ${maxIncome}` };
+  return { score: -25, hardReject: true, reason: `income above ${maxIncome}` };
 }
 
 function evaluateLand(profile, schemeText) {
@@ -281,6 +318,27 @@ function evaluateLand(profile, schemeText) {
   return { score: -20, hardReject: true, reason: `land above ${maxLand} acres` };
 }
 
+function evaluateCasteCategory(profile, schemeText) {
+  if (!profile.casteCategory) return { score: 0, reason: null };
+
+  const lowerText = schemeText.toLowerCase();
+  const categoryKeywords = CASTE_CATEGORY_KEYWORDS[profile.casteCategory] || [];
+  const hasSpecificCategory = categoryKeywords.some((k) => hasKeyword(lowerText, k));
+  if (hasSpecificCategory) {
+    return { score: 10, reason: `category match ${profile.casteCategory} +10` };
+  }
+
+  if (/(sc|st|obc|ews|minority|category|reserved)/i.test(schemeText)) {
+    return { score: 3, reason: "mentions social category criteria +3" };
+  }
+
+  return { score: 0, reason: null };
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function scoreMatch(match, profile) {
   const rawText = JSON.stringify(match.raw_json || "");
   const lowerText = rawText.toLowerCase();
@@ -290,14 +348,18 @@ function scoreMatch(match, profile) {
   let hardReject = false;
   const isCentral = isCentralScheme(rawText);
   const mentionedStates = extractMentionedStates(rawText);
+  let eligibilityPoints = 0;
+  const eligibilityMax = 115;
 
   if (profile.state) {
     if (lowerText.includes(profile.state)) {
       ruleScore += 20;
       reasons.push("state match +20");
+      eligibilityPoints += 20;
     } else if (isCentral) {
       ruleScore += 4;
       reasons.push("central fallback +4");
+      eligibilityPoints += 4;
     }
 
     if (!isCentral && mentionedStates.length > 0 && !mentionedStates.includes(profile.state)) {
@@ -312,24 +374,33 @@ function scoreMatch(match, profile) {
     if (keywords.some((k) => lowerText.includes(k))) {
       ruleScore += 10;
       reasons.push("profession match +10");
+      eligibilityPoints += 10;
     }
   }
 
   const landScore = evaluateLand(profile, rawText);
   if (landScore.reason) reasons.push(`land: ${landScore.reason} (${landScore.score >= 0 ? "+" : ""}${landScore.score})`);
   ruleScore += landScore.score;
+  if (landScore.score > 0) eligibilityPoints += landScore.score;
   hardReject = hardReject || landScore.hardReject;
 
   const incomeScore = evaluateIncome(profile, rawText);
   if (incomeScore.reason)
     reasons.push(`income: ${incomeScore.reason} (${incomeScore.score >= 0 ? "+" : ""}${incomeScore.score})`);
   ruleScore += incomeScore.score;
+  if (incomeScore.score > 0) eligibilityPoints += incomeScore.score;
   hardReject = hardReject || incomeScore.hardReject;
+
+  const casteScore = evaluateCasteCategory(profile, rawText);
+  if (casteScore.reason) reasons.push(casteScore.reason);
+  ruleScore += casteScore.score;
+  if (casteScore.score > 0) eligibilityPoints += casteScore.score;
 
   if (profile.schemePreference === "central") {
     if (isCentral) {
       ruleScore += 15;
       reasons.push("central preference +15");
+      eligibilityPoints += 15;
     } else {
       ruleScore -= 4;
     }
@@ -339,21 +410,80 @@ function scoreMatch(match, profile) {
     if (isStateScheme(rawText)) {
       ruleScore += 15;
       reasons.push("state preference +15");
+      eligibilityPoints += 15;
     } else {
       ruleScore -= 4;
     }
   }
 
   const semanticScore = Number(match.similarity || 0) * 100;
+  eligibilityPoints += Number(match.similarity || 0) * 20;
   const finalScore = semanticScore + ruleScore;
+  let eligibilityProbability = Math.round((eligibilityPoints / eligibilityMax) * 100);
+  eligibilityProbability = clamp(eligibilityProbability, 5, 99);
+  if (hardReject) eligibilityProbability = Math.min(eligibilityProbability, 30);
 
   return {
     ...match,
     semanticScore,
     ruleScore,
     finalScore,
+    eligibilityProbability,
     hardReject,
     scoreReasons: reasons,
+  };
+}
+
+function valueToText(value, maxLen = 280) {
+  if (value == null) return null;
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text ? text.slice(0, maxLen) : null;
+}
+
+function extractLinksFromText(text) {
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[^\s"\\]+/g) || [];
+  return [...new Set(matches)].slice(0, 3);
+}
+
+function extractReadiness(match) {
+  const raw = match.raw_json?.data?.en || {};
+  const wholeText = JSON.stringify(raw || "");
+  const links = extractLinksFromText(wholeText);
+
+  const documentsRequired =
+    valueToText(raw.documentsRequired) ||
+    valueToText(raw.requiredDocuments) ||
+    valueToText(raw.schemeDocuments) ||
+    valueToText(raw.eligibilityCriteria?.documentsRequired) ||
+    null;
+
+  const applyOnline =
+    valueToText(raw.howToApply?.onlineApplication) ||
+    valueToText(raw.howToApply?.online) ||
+    valueToText(raw.applicationProcess?.online) ||
+    links[0] ||
+    null;
+
+  const applyOffline =
+    valueToText(raw.howToApply?.offlineApplication) ||
+    valueToText(raw.howToApply?.offline) ||
+    valueToText(raw.applicationProcess?.offline) ||
+    valueToText(raw.whereToApply) ||
+    null;
+
+  const contactInfo =
+    valueToText(raw.contactDetails) ||
+    valueToText(raw.helpline) ||
+    valueToText(raw.contact) ||
+    null;
+
+  return {
+    documentsRequired,
+    applyOnline,
+    applyOffline,
+    contactInfo,
+    links,
   };
 }
 
@@ -370,6 +500,7 @@ function buildContext(rankedMatches) {
   return rankedMatches
     .map((m, index) => {
       let raw = m.raw_json?.data?.en || {};
+      const readiness = extractReadiness(m);
 
       let description = raw.schemeContent?.briefDescription || raw.schemeContent?.schemeContent || "";
       let eligibility =
@@ -390,6 +521,7 @@ Name: ${m.name}
 Semantic Similarity: ${m.semanticScore.toFixed(2)}
 Rule Score: ${m.ruleScore}
 Final Rank Score: ${m.finalScore.toFixed(2)}
+Eligibility Probability: ${m.eligibilityProbability}%
 Scoring Reasons: ${m.scoreReasons.join("; ") || "none"}
 
 Description:
@@ -400,6 +532,12 @@ ${eligibility}
 
 Benefits:
 ${benefits}
+
+Application Readiness:
+Documents Required: ${readiness.documentsRequired || "Not specified"}
+Apply Online: ${readiness.applyOnline || "Not specified"}
+Apply Offline: ${readiness.applyOffline || "Not specified"}
+Contact: ${readiness.contactInfo || "Not specified"}
 `;
     })
     .join("\n---------------------------------\n");
@@ -411,8 +549,28 @@ function profileToText(profile) {
   if (profile.profession) parts.push(`Profession: ${profile.profession}`);
   if (profile.landAcres != null) parts.push(`Land: ${profile.landAcres} acres`);
   if (profile.incomeAnnual != null) parts.push(`Annual income: INR ${profile.incomeAnnual}`);
+  if (profile.casteCategory) parts.push(`Social category: ${profile.casteCategory}`);
   if (profile.schemePreference) parts.push(`Preference: ${profile.schemePreference} schemes`);
   return parts.join(" | ") || "No saved profile yet";
+}
+
+function getInterviewState(profile) {
+  const missingFields = [];
+  if (!profile.state) missingFields.push("state");
+  if (!profile.profession) missingFields.push("profession");
+  if (profile.profession === "farmer" && profile.landAcres == null) missingFields.push("landAcres");
+  if (profile.incomeAnnual == null) missingFields.push("incomeAnnual");
+  if (!profile.casteCategory) missingFields.push("casteCategory");
+
+  let nextQuestion = null;
+  if (missingFields.includes("state")) nextQuestion = "Which state do you live in?";
+  else if (missingFields.includes("profession")) nextQuestion = "What is your profession (for example farmer, student, worker, entrepreneur)?";
+  else if (missingFields.includes("landAcres")) nextQuestion = "How many acres of land do you own?";
+  else if (missingFields.includes("incomeAnnual")) nextQuestion = "What is your annual household income in INR?";
+  else if (missingFields.includes("casteCategory"))
+    nextQuestion = "What is your social category (SC, ST, OBC, EWS, minority, or general)?";
+
+  return { missingFields, nextQuestion };
 }
 
 app.post("/chat", async (req, res) => {
@@ -446,9 +604,11 @@ app.post("/chat", async (req, res) => {
     let matches = await searchSchemes(embedding);
 
     if (!matches || matches.length === 0) {
+      const interviewState = getInterviewState(mergedProfile);
       return res.json({
         sessionId,
         memory: mergedProfile,
+        interview: interviewState,
         answer:
           "I could not find relevant schemes. Please add details like state, profession, income, land size, or target scheme type.",
         matches: [],
@@ -458,12 +618,19 @@ app.post("/chat", async (req, res) => {
     const rankedMatches = rankMatches(matches, mergedProfile).slice(0, 5);
     const context = buildContext(rankedMatches);
     const memoryContext = profileToText(mergedProfile);
+    const interviewState = getInterviewState(mergedProfile);
 
-    const answer = await generateChatResponse(question, context, memoryContext);
+    const answer = await generateChatResponse(
+      question,
+      context,
+      memoryContext,
+      interviewState.nextQuestion
+    );
 
     return res.json({
       sessionId,
       memory: mergedProfile,
+      interview: interviewState,
       answer,
       matches: rankedMatches.map((m) => ({
         name: m.name,
@@ -471,7 +638,9 @@ app.post("/chat", async (req, res) => {
         semanticScore: Number(m.semanticScore.toFixed(2)),
         ruleScore: m.ruleScore,
         finalScore: Number(m.finalScore.toFixed(2)),
+        eligibilityProbability: m.eligibilityProbability,
         scoreReasons: m.scoreReasons,
+        readiness: extractReadiness(m),
       })),
     });
   } catch (err) {
