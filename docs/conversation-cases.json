@@ -1,0 +1,20 @@
+[
+  {"id":"noise_001","input":"lol","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"noise_002","input":"haha","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"noise_003","input":"🔥🔥","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"nonsense_001","input":"kusgdfkgfksjgzkshklhlksfg","expected_intent":"nonsense_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"ack_001","input":"yes","expected_intent":"unclear_ack","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"discover_001","input":"I am a student in Karnataka, income 1.5 lakh, any scholarship?","expected_intent":"new_discovery","expected_mode":"list","retrieval":"allowed"},
+  {"id":"discover_002","input":"Maharashtra me farmer hu, 2 acre land","expected_intent":"new_discovery","expected_mode":"list","retrieval":"allowed"},
+  {"id":"discover_003","input":"UPSC CSE coaching schemes?","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
+  {"id":"complaint_001","input":"I asked Arunachal, why Rajasthan?","expected_intent":"complaint_correction","expected_mode":"list","retrieval":"allowed"},
+  {"id":"detail_001","input":"give documents for this scheme","expected_intent":"detail_request","expected_mode":"focused","retrieval":"blocked_or_optional"},
+  {"id":"detail_002","input":"office address in Bokaro","expected_intent":"detail_request","expected_mode":"focused","retrieval":"blocked_or_optional"},
+  {"id":"detail_003","input":"give more details","expected_intent":"detail_request","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"compare_001","input":"compare scheme 1 and scheme 2","expected_intent":"compare_request","expected_mode":"compare","retrieval":"blocked_or_optional"},
+  {"id":"select_001","input":"go with first one","expected_intent":"selection","expected_mode":"focused","retrieval":"blocked"},
+  {"id":"clarify_001","input":"Jharkhand","expected_intent":"clarification_answer","expected_mode":"clarify_or_list","retrieval":"allowed_or_blocked"},
+  {"id":"clarify_002","input":"income 0","expected_intent":"clarification_answer","expected_mode":"clarify_or_list","retrieval":"allowed_or_blocked"},
+  {"id":"lang_hi_001","input":"मुझे छात्रवृत्ति योजना चाहिए","language":"hi","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
+  {"id":"lang_mr_001","input":"मला शिष्यवृत्ती योजना पाहिजे","language":"mr","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"}
+]
