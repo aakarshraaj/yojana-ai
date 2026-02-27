@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { randomUUID, createHash } = require("crypto");
-const { generateEmbedding, generateChatResponse } = require("./lib/openai");
+const { generateEmbedding, generateChatResponse, translateText } = require("./lib/openai");
 const { searchSchemes } = require("./lib/supabase");
 
 const requiredEnv = ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
@@ -411,17 +411,37 @@ function buildContext(matches) {
     .join("\n---------------------------------\n");
 }
 
+async function translateToEnglish(text) {
+  return translateText(text, "English");
+}
+
+async function translateToHindi(text) {
+  return translateText(text, "Hindi");
+}
+
 app.post("/chat", async (req, res) => {
   try {
     cleanupSessions();
-    const { question, sessionId: sessionIdInput } = req.body;
+    const { question, language = "en", sessionId: sessionIdInput } = req.body;
+    const normalizedLanguage = String(language || "en").toLowerCase();
 
     if (!question || question.trim().length === 0) {
       return res.status(400).json({ error: "Question is required" });
     }
 
+    const toUserLanguage = async (text) => {
+      if (!text) return text;
+      if (normalizedLanguage === "hi") return translateToHindi(text);
+      return text;
+    };
+
+    let canonicalQuestion = question;
+    if (normalizedLanguage === "hi") {
+      canonicalQuestion = await translateToEnglish(question);
+    }
+
     const { sessionId, session } = getSession(sessionIdInput, req);
-    const mergedProfile = mergeProfile(session.profile || {}, extractProfile(question));
+    const mergedProfile = mergeProfile(session.profile || {}, extractProfile(canonicalQuestion));
     session.profile = mergedProfile;
     session.updatedAt = Date.now();
     const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
@@ -430,29 +450,31 @@ app.post("/chat", async (req, res) => {
     console.log("\n------------------------------");
     console.log("Session:", sessionId);
     console.log("User question:", question);
+    console.log("Canonical question:", canonicalQuestion);
 
-    const focusedFromHistory = findFocusedScheme(question, previousMatches);
+    const focusedFromHistory = findFocusedScheme(canonicalQuestion, previousMatches);
     const stickyFocusedScheme =
       focusedFromHistory ||
-      (!focusedFromHistory && isDetailIntent(question) && previousSelectedScheme ? previousSelectedScheme : null);
+      (!focusedFromHistory && isDetailIntent(canonicalQuestion) && previousSelectedScheme ? previousSelectedScheme : null);
 
     if (stickyFocusedScheme) {
       const focusedRanked = scoreMatch(stickyFocusedScheme, mergedProfile);
       session.selectedScheme = focusedRanked;
       const focusedContext = buildFocusedContext(focusedRanked);
       const answer = await generateChatResponse(
-        question,
+        canonicalQuestion,
         focusedContext,
         profileText(mergedProfile),
         null,
         "focused"
       );
+      const localizedAnswer = await toUserLanguage(answer);
 
       return res.json({
         sessionId,
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer,
+        answer: localizedAnswer,
         selectedScheme: focusedRanked.name,
         matches: [
           {
@@ -468,18 +490,19 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    if (isCompareIntent(question)) {
-      const comparePair = findCompareSchemes(question, previousMatches);
+    if (isCompareIntent(canonicalQuestion)) {
+      const comparePair = findCompareSchemes(canonicalQuestion, previousMatches);
       if (comparePair.length === 2) {
         const a = scoreMatch(comparePair[0], mergedProfile);
         const b = scoreMatch(comparePair[1], mergedProfile);
         const context = buildCompareContext(a, b);
-        const answer = await generateChatResponse(question, context, profileText(mergedProfile), null, "compare");
+        const answer = await generateChatResponse(canonicalQuestion, context, profileText(mergedProfile), null, "compare");
+        const localizedAnswer = await toUserLanguage(answer);
         return res.json({
           sessionId,
           memory: mergedProfile,
           interview: { nextQuestion: null },
-          answer,
+          answer: localizedAnswer,
           matches: [a, b].map((m) => ({
             slug: m.slug || null,
             name: m.name,
@@ -495,7 +518,9 @@ app.post("/chat", async (req, res) => {
         sessionId,
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer: `Tell me exactly which two schemes you want to compare.\n\nRecent options:\n${choiceSummary(previousMatches)}`,
+        answer: await toUserLanguage(
+          `Tell me exactly which two schemes you want to compare.\n\nRecent options:\n${choiceSummary(previousMatches)}`
+        ),
         matches: normalizeMatches(previousMatches).slice(0, 4).map((m) => ({
           slug: m.slug || null,
           name: m.name,
@@ -504,21 +529,22 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    if (isSelectionIntent(question) && previousMatches.length) {
+    if (isSelectionIntent(canonicalQuestion) && previousMatches.length) {
       const selected =
-        findFocusedScheme(question, previousMatches) ||
+        findFocusedScheme(canonicalQuestion, previousMatches) ||
         normalizeMatches(previousMatches)[0] ||
         null;
       if (selected) {
         const ranked = scoreMatch(selected, mergedProfile);
         session.selectedScheme = ranked;
         const context = buildFocusedContext(ranked);
-        const answer = await generateChatResponse(question, context, profileText(mergedProfile), null, "focused");
+        const answer = await generateChatResponse(canonicalQuestion, context, profileText(mergedProfile), null, "focused");
+        const localizedAnswer = await toUserLanguage(answer);
         return res.json({
           sessionId,
           memory: mergedProfile,
           interview: { nextQuestion: null },
-          answer,
+          answer: localizedAnswer,
           selectedScheme: ranked.name,
           matches: [
             {
@@ -535,23 +561,26 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    const query = `${question}\n\nKnown profile: ${profileText(mergedProfile)}`;
+    const query = `${canonicalQuestion}\n\nKnown profile: ${profileText(mergedProfile)}`;
     const embedding = await generateEmbedding(query);
     let matches = await searchSchemes(embedding);
     matches = rankMatches(matches, mergedProfile);
     session.lastMatches = matches.slice(0, 10);
 
     const nextQuestion = getNextQuestion(mergedProfile);
+    const localizedNextQuestion = nextQuestion ? await toUserLanguage(nextQuestion) : null;
 
     if (!matches.length) {
-      if (isDetailIntent(question) && previousMatches.length) {
+      if (isDetailIntent(canonicalQuestion) && previousMatches.length) {
         return res.json({
           sessionId,
           memory: mergedProfile,
           interview: { nextQuestion: null },
-          answer: `I can help with that, but please tell me which scheme you mean.\n\nRecent options:\n${choiceSummary(
-            previousMatches
-          )}`,
+          answer: await toUserLanguage(
+            `I can help with that, but please tell me which scheme you mean.\n\nRecent options:\n${choiceSummary(
+              previousMatches
+            )}`
+          ),
           matches: normalizeMatches(previousMatches).slice(0, 4).map((m) => ({
             slug: m.slug || null,
             name: m.name,
@@ -562,31 +591,33 @@ app.post("/chat", async (req, res) => {
       return res.json({
         sessionId,
         memory: mergedProfile,
-        interview: { nextQuestion },
-        answer:
-          nextQuestion || "I could not find relevant schemes right now. Please try another wording or share more details.",
+        interview: { nextQuestion: localizedNextQuestion },
+        answer: await toUserLanguage(
+          nextQuestion || "I could not find relevant schemes right now. Please try another wording or share more details."
+        ),
         matches: [],
       });
     }
 
     const context = buildContext(matches);
-    const focusedFromCurrent = findFocusedScheme(question, matches);
+    const focusedFromCurrent = findFocusedScheme(canonicalQuestion, matches);
     if (focusedFromCurrent) {
       session.selectedScheme = focusedFromCurrent;
       const focusedContext = buildFocusedContext(focusedFromCurrent);
       const answer = await generateChatResponse(
-        question,
+        canonicalQuestion,
         focusedContext,
         profileText(mergedProfile),
         null,
         "focused"
       );
+      const localizedAnswer = await toUserLanguage(answer);
 
       return res.json({
         sessionId,
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer,
+        answer: localizedAnswer,
         selectedScheme: focusedFromCurrent.name,
         matches: [
           {
@@ -602,12 +633,14 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    if (isDetailIntent(question)) {
+    if (isDetailIntent(canonicalQuestion)) {
       return res.json({
         sessionId,
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer: `Please tell me the exact scheme name you want details for.\n\nTop options:\n${choiceSummary(matches)}`,
+        answer: await toUserLanguage(
+          `Please tell me the exact scheme name you want details for.\n\nTop options:\n${choiceSummary(matches)}`
+        ),
         matches: matches.slice(0, 4).map((m) => ({
           slug: m.slug || null,
           name: m.name,
@@ -620,13 +653,20 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    const answer = await generateChatResponse(question, context, profileText(mergedProfile), nextQuestion, "list");
+    const answer = await generateChatResponse(
+      canonicalQuestion,
+      context,
+      profileText(mergedProfile),
+      nextQuestion,
+      "list"
+    );
+    const localizedAnswer = await toUserLanguage(answer);
 
     return res.json({
       sessionId,
       memory: mergedProfile,
-      interview: { nextQuestion },
-      answer,
+      interview: { nextQuestion: localizedNextQuestion },
+      answer: localizedAnswer,
       matches: matches.map((m) => ({
         slug: m.slug || null,
         name: m.name,
