@@ -52,7 +52,21 @@ const PROFESSION_KEYWORDS = {
   farmer: ["farmer", "agriculture", "kisan", "cultivator"],
   student: ["student", "school", "college"],
   worker: ["worker", "labour", "labor", "daily wage"],
-  entrepreneur: ["business", "entrepreneur", "startup", "self employed", "self-employed"],
+  entrepreneur: [
+    "business",
+    "entrepreneur",
+    "startup",
+    "self employed",
+    "self-employed",
+    "shop",
+    "store",
+    "medical shop",
+    "medicine shop",
+    "pharmacy",
+    "dukan",
+    "dukandar",
+    "trader",
+  ],
 };
 
 const CATEGORY_KEYWORDS = {
@@ -128,6 +142,9 @@ function extractByKeywords(text, dict) {
 }
 
 function extractIncome(text) {
+  if (/\b(no income|zero income|income is zero|without income|no earning)\b/i.test(text)) {
+    return 0;
+  }
   const patterns = [
     /(?:income|salary|earning|annual income)[^\d]{0,20}(?:rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)(?:\s*(lakh|lakhs|lac|lacs|crore|crores|k|thousand))?/i,
     /(?:rs\.?|inr)\s*([\d,]+(?:\.\d+)?)(?:\s*(lakh|lakhs|lac|lacs|crore|crores|k|thousand))?/i,
@@ -138,6 +155,21 @@ function extractIncome(text) {
     const base = toNumber(m[1]);
     if (base == null) continue;
     return Math.round(base * unitMultiplier(m[2]));
+  }
+  return null;
+}
+
+function extractAge(text) {
+  const patterns = [
+    /(?:i am|i'm|im|age|aged)\s*(\d{1,2})\b/i,
+    /(\d{1,2})\s*(?:years old|year old|yrs old|yrs|years)\b/i,
+    /(\d{1,2})\s*(?:saal|varsh|saal ka|saal ki)\b/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (!m) continue;
+    const age = Number(m[1]);
+    if (Number.isFinite(age) && age >= 1 && age <= 120) return age;
   }
   return null;
 }
@@ -155,6 +187,7 @@ function extractLandAcres(text) {
 function extractProfile(question) {
   return {
     state: extractState(question),
+    age: extractAge(question),
     profession: extractByKeywords(question, PROFESSION_KEYWORDS),
     category: extractByKeywords(question, CATEGORY_KEYWORDS),
     incomeAnnual: extractIncome(question),
@@ -165,6 +198,7 @@ function extractProfile(question) {
 function mergeProfile(oldProfile, newProfile) {
   return {
     state: newProfile.state || oldProfile.state || null,
+    age: newProfile.age != null ? newProfile.age : oldProfile.age ?? null,
     profession: newProfile.profession || oldProfile.profession || null,
     category: newProfile.category || oldProfile.category || null,
     incomeAnnual: newProfile.incomeAnnual != null ? newProfile.incomeAnnual : oldProfile.incomeAnnual ?? null,
@@ -175,6 +209,7 @@ function mergeProfile(oldProfile, newProfile) {
 function profileText(profile) {
   const fields = [];
   if (profile.state) fields.push(`State: ${profile.state}`);
+  if (profile.age != null) fields.push(`Age: ${profile.age}`);
   if (profile.profession) fields.push(`Profession: ${profile.profession}`);
   if (profile.category) fields.push(`Category: ${profile.category}`);
   if (profile.incomeAnnual != null) fields.push(`Annual income INR: ${profile.incomeAnnual}`);
@@ -182,8 +217,13 @@ function profileText(profile) {
   return fields.join(" | ") || "No profile captured";
 }
 
+function hasProfileSignal(profile) {
+  return !!(profile.state || profile.profession || profile.category || profile.incomeAnnual != null || profile.landAcres != null);
+}
+
 function getNextQuestion(profile) {
   if (!profile.state) return "Which state do you live in?";
+  if (profile.age == null) return "What is your age?";
   if (!profile.profession) return "What is your profession (farmer, student, worker, entrepreneur)?";
   if (profile.profession === "farmer" && profile.landAcres == null) return "How many acres of land do you own?";
   if (profile.incomeAnnual == null) return "What is your annual household income in INR?";
@@ -263,7 +303,14 @@ function isLikelyGibberish(text) {
 function discoverySignal(question, profile, session) {
   const q = normalizeText(question);
   const tokens = q.split(" ").filter(Boolean);
-  const hasProfile = !!(profile.state || profile.profession || profile.category || profile.incomeAnnual || profile.landAcres);
+  const hasProfile = !!(
+    profile.state ||
+    profile.age != null ||
+    profile.profession ||
+    profile.category ||
+    profile.incomeAnnual ||
+    profile.landAcres
+  );
   const schemeIntent = /(scheme|scholarship|pension|benefit|loan|subsidy|support|help|apply|eligibility|yojana)/i.test(
     question
   );
@@ -556,7 +603,14 @@ async function generateValidatedModeAnswer({
 }
 
 async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
-  const hasProfile = !!(profile.state || profile.profession || profile.category || profile.incomeAnnual || profile.landAcres);
+  const hasProfile = !!(
+    profile.state ||
+    profile.age != null ||
+    profile.profession ||
+    profile.category ||
+    profile.incomeAnnual ||
+    profile.landAcres
+  );
   const selectedScheme = session.selectedScheme?.name || null;
   let base;
   if (selectedScheme) {
@@ -579,6 +633,24 @@ async function buildPurposeGuidance(toUserLanguage) {
   return toUserLanguage(
     "I can help you discover government schemes, compare options, or guide applications. Tell me your state and what support you need (scholarship, pension, farmer, business, health)."
   );
+}
+
+async function buildProgressClarifier(profile, toUserLanguage) {
+  const summary = [];
+  if (profile.age != null) summary.push(`age: ${profile.age}`);
+  if (profile.profession) summary.push(`profession: ${profile.profession}`);
+  if (profile.incomeAnnual != null) summary.push(`income: INR ${profile.incomeAnnual}`);
+  if (profile.category) summary.push(`category: ${profile.category}`);
+  if (profile.state) summary.push(`state: ${profile.state}`);
+  if (profile.landAcres != null) summary.push(`land: ${profile.landAcres} acres`);
+
+  const nextQuestion = getNextQuestion(profile);
+  if (!nextQuestion) {
+    return toUserLanguage("Thanks, I have enough profile details. Tell me what type of schemes you want (scholarship, pension, farmer, business, health).");
+  }
+
+  if (summary.length === 0) return toUserLanguage(nextQuestion);
+  return toUserLanguage(`Noted ${summary.join(", ")}. ${nextQuestion}`);
 }
 
 function rankMatches(matches, profile) {
@@ -613,11 +685,21 @@ async function translateToHindi(text) {
   return translateText(text, "Hindi");
 }
 
+async function translateToMarathi(text) {
+  return translateText(text, "Marathi");
+}
+
 app.post("/chat", async (req, res) => {
   try {
     cleanupSessions();
     const { question, language = "en", sessionId: sessionIdInput } = req.body;
-    const normalizedLanguage = String(language || "en").toLowerCase();
+    const normalizedLanguageInput = String(language || "en").toLowerCase();
+    const normalizedLanguage =
+      normalizedLanguageInput === "marathi"
+        ? "mr"
+        : normalizedLanguageInput === "hindi"
+          ? "hi"
+          : normalizedLanguageInput;
 
     if (!question || question.trim().length === 0) {
       return res.status(400).json({ error: "Question is required" });
@@ -626,11 +708,12 @@ app.post("/chat", async (req, res) => {
     const toUserLanguage = async (text) => {
       if (!text) return text;
       if (normalizedLanguage === "hi") return translateToHindi(text);
+      if (normalizedLanguage === "mr") return translateToMarathi(text);
       return text;
     };
 
     let canonicalQuestion = question;
-    if (normalizedLanguage === "hi") {
+    if (normalizedLanguage === "hi" || normalizedLanguage === "mr") {
       canonicalQuestion = await translateToEnglish(question);
     }
 
@@ -683,10 +766,7 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    if (
-      intentMeta.confidence < 0.75 &&
-      !["complaint_correction", "smalltalk_noise", "nonsense_noise", "unclear_ack"].includes(intent)
-    ) {
+    if (intent === "clarification_answer" && intentMeta.confidence < 0.75) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "state and exact support you need";
       return respond({
@@ -735,10 +815,13 @@ app.post("/chat", async (req, res) => {
     if (intent === "new_discovery" && discoverySignal(canonicalQuestion, mergedProfile, session) < 3) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "state and the support type you need";
+      const targetedPrompt = hasProfileSignal(mergedProfile)
+        ? await buildProgressClarifier(mergedProfile, toUserLanguage)
+        : await buildPurposeGuidance(toUserLanguage);
       return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer: await buildPurposeGuidance(toUserLanguage),
+        answer: targetedPrompt,
         matches: [],
       });
     }
