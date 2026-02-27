@@ -90,14 +90,15 @@ function fallbackSessionId(req) {
 }
 
 function getSession(sessionIdInput, req) {
+  const provided = typeof sessionIdInput === "string" && sessionIdInput.trim().length > 0;
   const sessionId =
-    typeof sessionIdInput === "string" && sessionIdInput.trim()
+    provided
       ? sessionIdInput.trim()
       : fallbackSessionId(req) || randomUUID();
   const existing = sessionMemory.get(sessionId) || { profile: {}, updatedAt: Date.now() };
   existing.updatedAt = Date.now();
   sessionMemory.set(sessionId, existing);
-  return { sessionId, session: existing };
+  return { sessionId, session: existing, sessionIdProvided: provided };
 }
 
 function toNumber(value) {
@@ -520,10 +521,38 @@ function validateGeneratedAnswer(answer, mode, intent) {
   if (intent === "complaint_correction") {
     return /(you are right|you’re right|you are correct|sorry|apologize)/.test(text);
   }
+  if (mode === "list") {
+    return /(1\.\s|2\.\s|eligibility probability|here are)/.test(text);
+  }
   if (mode === "focused") {
     return !/(1\.\s|2\.\s|here are some relevant schemes)/.test(text);
   }
+  if (mode === "compare") {
+    return /(scheme a|scheme b|difference|compared|versus|vs)/.test(text);
+  }
+  if (mode === "clarify") {
+    return !/(1\.\s|2\.\s|eligibility probability|here are)/.test(text);
+  }
   return true;
+}
+
+async function generateValidatedModeAnswer({
+  question,
+  context,
+  memoryContext,
+  nextQuestion = null,
+  mode,
+  intent,
+  fallbackAnswer,
+}) {
+  const first = await generateChatResponse(question, context, memoryContext, nextQuestion, mode);
+  if (validateGeneratedAnswer(first, mode, intent)) return first;
+
+  const strictQuestion = `STRICT MODE (${mode}) - do not violate mode rules.\n\n${question}`;
+  const second = await generateChatResponse(strictQuestion, context, memoryContext, nextQuestion, mode);
+  if (validateGeneratedAnswer(second, mode, intent)) return second;
+
+  return fallbackAnswer;
 }
 
 async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
@@ -605,7 +634,18 @@ app.post("/chat", async (req, res) => {
       canonicalQuestion = await translateToEnglish(question);
     }
 
-    const { sessionId, session } = getSession(sessionIdInput, req);
+    const { sessionId, session, sessionIdProvided } = getSession(sessionIdInput, req);
+    const respond = (payload) =>
+      res.json({
+        ...payload,
+        sessionId,
+        session: {
+          sessionIdProvided,
+          continuityHint: sessionIdProvided
+            ? null
+            : "Send this sessionId in the next request to preserve conversation context.",
+        },
+      });
     const mergedProfile = mergeProfile(session.profile || {}, extractProfile(canonicalQuestion));
     session.profile = mergedProfile;
     session.updatedAt = Date.now();
@@ -635,8 +675,7 @@ app.post("/chat", async (req, res) => {
     if (isRepeatedLowSignal) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = session.pendingQuestion || "what you need help with";
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await toUserLanguage("I still need a specific request. Tell me your state and what scheme help you want."),
@@ -644,11 +683,24 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    if (
+      intentMeta.confidence < 0.75 &&
+      !["complaint_correction", "smalltalk_noise", "nonsense_noise", "unclear_ack"].includes(intent)
+    ) {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "state and exact support you need";
+      return respond({
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await buildPurposeGuidance(toUserLanguage),
+        matches: [],
+      });
+    }
+
     if (intent === "smalltalk_noise") {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "user intent clarification";
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await buildSmalltalkClarifier(session, mergedProfile, toUserLanguage),
@@ -659,8 +711,7 @@ app.post("/chat", async (req, res) => {
     if (intent === "nonsense_noise") {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "state and support type";
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await toUserLanguage(
@@ -673,8 +724,7 @@ app.post("/chat", async (req, res) => {
     if (intent === "unclear_ack") {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = session.pendingQuestion || "your exact request (discover, compare, or details)";
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await buildPendingClarifier(session, toUserLanguage),
@@ -685,8 +735,7 @@ app.post("/chat", async (req, res) => {
     if (intent === "new_discovery" && discoverySignal(canonicalQuestion, mergedProfile, session) < 3) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "state and the support type you need";
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await buildPurposeGuidance(toUserLanguage),
@@ -713,21 +762,21 @@ app.post("/chat", async (req, res) => {
         answer = `You are right. The previous response mixed the wrong state. I could not find strong ${mergedProfile.state || "state"}-specific matches right now, but I can retry with more profile details.`;
       } else {
         const context = buildContext(matches);
-        const modelAnswer = await generateChatResponse(
-          canonicalQuestion,
+        const modelAnswer = await generateValidatedModeAnswer({
+          question: canonicalQuestion,
           context,
-          profileText(mergedProfile),
-          null,
-          "list"
-        );
+          memoryContext: profileText(mergedProfile),
+          mode: "list",
+          intent: "complaint_correction",
+          fallbackAnswer: buildDeterministicList(matches, mergedProfile.state),
+        });
         const acknowledged = `You are right, that was incorrect. I should only show ${mergedProfile.state || "your state"} (or central) schemes.\n\n`;
         answer = validateGeneratedAnswer(modelAnswer, "list", "complaint_correction")
           ? acknowledged + modelAnswer
           : `${acknowledged}${buildDeterministicList(matches, mergedProfile.state)}`;
       }
 
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await toUserLanguage(answer),
@@ -750,12 +799,18 @@ app.post("/chat", async (req, res) => {
         const a = scoreMatch(comparePair[0], mergedProfile);
         const b = scoreMatch(comparePair[1], mergedProfile);
         const context = buildCompareContext(a, b);
-        const answer = await generateChatResponse(canonicalQuestion, context, profileText(mergedProfile), null, "compare");
+        const answer = await generateValidatedModeAnswer({
+          question: canonicalQuestion,
+          context,
+          memoryContext: profileText(mergedProfile),
+          mode: "compare",
+          intent,
+          fallbackAnswer: `Comparison summary:\n\nA) ${a.name}\nB) ${b.name}\n\nPlease ask for eligibility/documents/apply steps for either scheme.`,
+        });
         const localizedAnswer = await toUserLanguage(answer);
         session.lastAssistantAction = "compare";
         session.pendingQuestion = null;
-        return res.json({
-          sessionId,
+        return respond({
           memory: mergedProfile,
           interview: { nextQuestion: null },
           answer: localizedAnswer,
@@ -772,8 +827,7 @@ app.post("/chat", async (req, res) => {
       }
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "which two schemes to compare";
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await toUserLanguage(
@@ -796,15 +850,19 @@ app.post("/chat", async (req, res) => {
         const ranked = scoreMatch(selected, mergedProfile);
         session.selectedScheme = ranked;
         const context = buildFocusedContext(ranked);
-        const answer = await generateChatResponse(canonicalQuestion, context, profileText(mergedProfile), null, "focused");
-        const finalAnswer = validateGeneratedAnswer(answer, "focused", intent)
-          ? answer
-          : buildFocusedContext(ranked);
+        const answer = await generateValidatedModeAnswer({
+          question: canonicalQuestion,
+          context,
+          memoryContext: profileText(mergedProfile),
+          mode: "focused",
+          intent,
+          fallbackAnswer: `Here are details for ${ranked.name}:\n\n${context}`,
+        });
+        const finalAnswer = answer;
         const localizedAnswer = await toUserLanguage(finalAnswer);
         session.lastAssistantAction = "focused";
         session.pendingQuestion = null;
-        return res.json({
-          sessionId,
+        return respond({
           memory: mergedProfile,
           interview: { nextQuestion: null },
           answer: localizedAnswer,
@@ -833,20 +891,18 @@ app.post("/chat", async (req, res) => {
       const focusedRanked = scoreMatch(stickyFocusedScheme, mergedProfile);
       session.selectedScheme = focusedRanked;
       const focusedContext = buildFocusedContext(focusedRanked);
-      const answer = await generateChatResponse(
-        canonicalQuestion,
-        focusedContext,
-        profileText(mergedProfile),
-        null,
-        "focused"
-      );
-      const finalAnswer = validateGeneratedAnswer(answer, "focused", intent)
-        ? answer
-        : `Here are details for ${focusedRanked.name}:\n\n${focusedContext}`;
+      const answer = await generateValidatedModeAnswer({
+        question: canonicalQuestion,
+        context: focusedContext,
+        memoryContext: profileText(mergedProfile),
+        mode: "focused",
+        intent,
+        fallbackAnswer: `Here are details for ${focusedRanked.name}:\n\n${focusedContext}`,
+      });
+      const finalAnswer = answer;
       session.lastAssistantAction = "focused";
       session.pendingQuestion = null;
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await toUserLanguage(finalAnswer),
@@ -880,8 +936,7 @@ app.post("/chat", async (req, res) => {
       if (intent === "detail_request" && previousMatches.length) {
         session.lastAssistantAction = "clarify";
         session.pendingQuestion = "which scheme do you mean";
-        return res.json({
-          sessionId,
+        return respond({
           memory: mergedProfile,
           interview: { nextQuestion: null },
           answer: await toUserLanguage(
@@ -898,8 +953,7 @@ app.post("/chat", async (req, res) => {
       }
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = nextQuestion || null;
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: localizedNextQuestion },
         answer: await toUserLanguage(
@@ -913,8 +967,7 @@ app.post("/chat", async (req, res) => {
     if (intent === "detail_request" && !focusedFromCurrent && !previousSelectedScheme) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "scheme name for details";
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await toUserLanguage(
@@ -935,20 +988,18 @@ app.post("/chat", async (req, res) => {
     if (intent === "detail_request" && focusedFromCurrent) {
       session.selectedScheme = focusedFromCurrent;
       const focusedContext = buildFocusedContext(focusedFromCurrent);
-      const answer = await generateChatResponse(
-        canonicalQuestion,
-        focusedContext,
-        profileText(mergedProfile),
-        null,
-        "focused"
-      );
-      const finalAnswer = validateGeneratedAnswer(answer, "focused", intent)
-        ? answer
-        : `Here are details for ${focusedFromCurrent.name}:\n\n${focusedContext}`;
+      const answer = await generateValidatedModeAnswer({
+        question: canonicalQuestion,
+        context: focusedContext,
+        memoryContext: profileText(mergedProfile),
+        mode: "focused",
+        intent,
+        fallbackAnswer: `Here are details for ${focusedFromCurrent.name}:\n\n${focusedContext}`,
+      });
+      const finalAnswer = answer;
       session.lastAssistantAction = "focused";
       session.pendingQuestion = null;
-      return res.json({
-        sessionId,
+      return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await toUserLanguage(finalAnswer),
@@ -966,22 +1017,20 @@ app.post("/chat", async (req, res) => {
     }
 
     const context = buildContext(matches);
-    const answer = await generateChatResponse(
-      canonicalQuestion,
+    const listAnswer = await generateValidatedModeAnswer({
+      question: canonicalQuestion,
       context,
-      profileText(mergedProfile),
+      memoryContext: profileText(mergedProfile),
       nextQuestion,
-      "list"
-    );
-    const listAnswer = validateGeneratedAnswer(answer, "list", intent)
-      ? answer
-      : buildDeterministicList(matches, mergedProfile.state);
+      mode: "list",
+      intent,
+      fallbackAnswer: buildDeterministicList(matches, mergedProfile.state),
+    });
     const localizedAnswer = await toUserLanguage(listAnswer);
     session.lastAssistantAction = "list";
     session.pendingQuestion = nextQuestion || null;
 
-    return res.json({
-      sessionId,
+    return respond({
       memory: mergedProfile,
       interview: { nextQuestion: localizedNextQuestion },
       answer: localizedAnswer,
