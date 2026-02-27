@@ -256,13 +256,43 @@ function tokenSet(text) {
   );
 }
 
+function isDetailIntent(question) {
+  return /(more|detail|about|apply|application|process|how to|how do|documents|document|eligibility|link|website|form|office|address|contact|helpline)/i.test(
+    question
+  );
+}
+
+function isCompareIntent(question) {
+  return /(compare|difference|vs|versus|better|best among|which is better)/i.test(question);
+}
+
+function isSelectionIntent(question) {
+  return /(select|choose|pick|go with|finalize|this one|that one|first one|second one)/i.test(question);
+}
+
+function choiceSummary(matches, limit = 4) {
+  const items = normalizeMatches(matches).slice(0, limit);
+  if (!items.length) return "No recent schemes to choose from.";
+  return items.map((m, i) => `${i + 1}. ${m.name}`).join("\n");
+}
+
+function findCompareSchemes(question, candidateMatches) {
+  const qTokens = tokenSet(question);
+  const matched = [];
+  for (const m of normalizeMatches(candidateMatches)) {
+    const nameTokens = tokenSet(m.name);
+    const overlap = [...nameTokens].filter((t) => qTokens.has(t)).length;
+    if (overlap >= 2 || normalizeText(question).includes(normalizeText(m.name))) {
+      matched.push(m);
+    }
+  }
+  return matched.slice(0, 2);
+}
+
 function findFocusedScheme(question, candidateMatches) {
   const qNorm = normalizeText(question);
   const qTokens = tokenSet(question);
-  const detailIntent =
-    /(more|detail|about|apply|application|process|how to|how do|documents|eligibility|link|website|form)/i.test(
-      question
-    );
+  const detailIntent = isDetailIntent(question);
 
   let best = null;
   let bestScore = 0;
@@ -346,6 +376,17 @@ ${links}
 `;
 }
 
+function buildCompareContext(a, b) {
+  return `Compare these two schemes only.
+
+Scheme A:
+${buildFocusedContext(a)}
+
+Scheme B:
+${buildFocusedContext(b)}
+`;
+}
+
 function rankMatches(matches, profile) {
   const scored = normalizeMatches(matches).map((m) => scoreMatch(m, profile));
   const keep = scored.filter((m) => !m.hardReject);
@@ -384,14 +425,20 @@ app.post("/chat", async (req, res) => {
     session.profile = mergedProfile;
     session.updatedAt = Date.now();
     const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
+    const previousSelectedScheme = session.selectedScheme || null;
 
     console.log("\n------------------------------");
     console.log("Session:", sessionId);
     console.log("User question:", question);
 
     const focusedFromHistory = findFocusedScheme(question, previousMatches);
-    if (focusedFromHistory) {
-      const focusedRanked = scoreMatch(focusedFromHistory, mergedProfile);
+    const stickyFocusedScheme =
+      focusedFromHistory ||
+      (!focusedFromHistory && isDetailIntent(question) && previousSelectedScheme ? previousSelectedScheme : null);
+
+    if (stickyFocusedScheme) {
+      const focusedRanked = scoreMatch(stickyFocusedScheme, mergedProfile);
+      session.selectedScheme = focusedRanked;
       const focusedContext = buildFocusedContext(focusedRanked);
       const answer = await generateChatResponse(
         question,
@@ -421,6 +468,73 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    if (isCompareIntent(question)) {
+      const comparePair = findCompareSchemes(question, previousMatches);
+      if (comparePair.length === 2) {
+        const a = scoreMatch(comparePair[0], mergedProfile);
+        const b = scoreMatch(comparePair[1], mergedProfile);
+        const context = buildCompareContext(a, b);
+        const answer = await generateChatResponse(question, context, profileText(mergedProfile), null, "compare");
+        return res.json({
+          sessionId,
+          memory: mergedProfile,
+          interview: { nextQuestion: null },
+          answer,
+          matches: [a, b].map((m) => ({
+            slug: m.slug || null,
+            name: m.name,
+            similarity: Number(m.similarity || 0),
+            semanticScore: Number(m.semanticScore.toFixed(2)),
+            ruleScore: m.ruleScore,
+            finalScore: Number(m.finalScore.toFixed(2)),
+            eligibilityProbability: m.eligibilityProbability,
+          })),
+        });
+      }
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: `Tell me exactly which two schemes you want to compare.\n\nRecent options:\n${choiceSummary(previousMatches)}`,
+        matches: normalizeMatches(previousMatches).slice(0, 4).map((m) => ({
+          slug: m.slug || null,
+          name: m.name,
+          similarity: Number(m.similarity || 0),
+        })),
+      });
+    }
+
+    if (isSelectionIntent(question) && previousMatches.length) {
+      const selected =
+        findFocusedScheme(question, previousMatches) ||
+        normalizeMatches(previousMatches)[0] ||
+        null;
+      if (selected) {
+        const ranked = scoreMatch(selected, mergedProfile);
+        session.selectedScheme = ranked;
+        const context = buildFocusedContext(ranked);
+        const answer = await generateChatResponse(question, context, profileText(mergedProfile), null, "focused");
+        return res.json({
+          sessionId,
+          memory: mergedProfile,
+          interview: { nextQuestion: null },
+          answer,
+          selectedScheme: ranked.name,
+          matches: [
+            {
+              slug: ranked.slug || null,
+              name: ranked.name,
+              similarity: Number(ranked.similarity || 0),
+              semanticScore: Number(ranked.semanticScore.toFixed(2)),
+              ruleScore: ranked.ruleScore,
+              finalScore: Number(ranked.finalScore.toFixed(2)),
+              eligibilityProbability: ranked.eligibilityProbability,
+            },
+          ],
+        });
+      }
+    }
+
     const query = `${question}\n\nKnown profile: ${profileText(mergedProfile)}`;
     const embedding = await generateEmbedding(query);
     let matches = await searchSchemes(embedding);
@@ -430,6 +544,21 @@ app.post("/chat", async (req, res) => {
     const nextQuestion = getNextQuestion(mergedProfile);
 
     if (!matches.length) {
+      if (isDetailIntent(question) && previousMatches.length) {
+        return res.json({
+          sessionId,
+          memory: mergedProfile,
+          interview: { nextQuestion: null },
+          answer: `I can help with that, but please tell me which scheme you mean.\n\nRecent options:\n${choiceSummary(
+            previousMatches
+          )}`,
+          matches: normalizeMatches(previousMatches).slice(0, 4).map((m) => ({
+            slug: m.slug || null,
+            name: m.name,
+            similarity: Number(m.similarity || 0),
+          })),
+        });
+      }
       return res.json({
         sessionId,
         memory: mergedProfile,
@@ -443,6 +572,7 @@ app.post("/chat", async (req, res) => {
     const context = buildContext(matches);
     const focusedFromCurrent = findFocusedScheme(question, matches);
     if (focusedFromCurrent) {
+      session.selectedScheme = focusedFromCurrent;
       const focusedContext = buildFocusedContext(focusedFromCurrent);
       const answer = await generateChatResponse(
         question,
@@ -469,6 +599,24 @@ app.post("/chat", async (req, res) => {
             eligibilityProbability: focusedFromCurrent.eligibilityProbability,
           },
         ],
+      });
+    }
+
+    if (isDetailIntent(question)) {
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: `Please tell me the exact scheme name you want details for.\n\nTop options:\n${choiceSummary(matches)}`,
+        matches: matches.slice(0, 4).map((m) => ({
+          slug: m.slug || null,
+          name: m.name,
+          similarity: m.similarity,
+          semanticScore: Number(m.semanticScore.toFixed(2)),
+          ruleScore: m.ruleScore,
+          finalScore: Number(m.finalScore.toFixed(2)),
+          eligibilityProbability: m.eligibilityProbability,
+        })),
       });
     }
 
