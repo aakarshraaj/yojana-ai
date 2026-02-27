@@ -190,6 +190,25 @@ function getNextQuestion(profile) {
   return null;
 }
 
+function classifyIntent(question, session) {
+  const text = normalizeText(question);
+  const hasStateComplaint =
+    /(i asked|why|wrong|instead|you gave|you are giving|other state|another state|not.*state)/i.test(question) &&
+    /(state|arunachal|maharashtra|jharkhand|rajasthan|gujarat|karnataka|punjab|haryana)/i.test(question);
+  if (hasStateComplaint) return { intent: "complaint_correction", confidence: 0.95 };
+
+  if (isCompareIntent(question)) return { intent: "compare_request", confidence: 0.9 };
+  if (isSelectionIntent(question)) return { intent: "selection", confidence: 0.85 };
+  if (isDetailIntent(question)) return { intent: "detail_request", confidence: 0.8 };
+
+  const pendingQuestion = session.pendingQuestion || null;
+  if (pendingQuestion && text.split(" ").length <= 8) {
+    return { intent: "clarification_answer", confidence: 0.7 };
+  }
+
+  return { intent: "new_discovery", confidence: 0.7 };
+}
+
 function isCentralScheme(raw) {
   return /(pradhan mantri|pm-|government of india|ministry of|national scheme|centrally sponsored|all india|central government)/i.test(
     raw
@@ -229,6 +248,30 @@ function scoreMatch(match, profile) {
     finalScore,
     hardReject,
     eligibilityProbability,
+  };
+}
+
+function applyStateGuardrails(matches, profile) {
+  const normalized = normalizeMatches(matches);
+  if (!profile.state) {
+    return { matches: normalized, droppedCount: 0, mismatchDetected: false };
+  }
+
+  let droppedCount = 0;
+  const filtered = normalized.filter((m) => {
+    const raw = JSON.stringify(m.raw_json || "");
+    const mentionedStates = extractMentionedStates(raw);
+    if (mentionedStates.length === 0) return true;
+    if (mentionedStates.includes(profile.state)) return true;
+    if (isCentralScheme(raw)) return true;
+    droppedCount += 1;
+    return false;
+  });
+
+  return {
+    matches: filtered.length > 0 ? filtered : normalized,
+    droppedCount,
+    mismatchDetected: droppedCount > 0,
   };
 }
 
@@ -387,6 +430,30 @@ ${buildFocusedContext(b)}
 `;
 }
 
+function buildDeterministicList(matches, profileState = null) {
+  const lines = [];
+  if (profileState) lines.push(`Here are corrected options for ${profileState}:`);
+  else lines.push("Here are relevant schemes:");
+  lines.push("");
+
+  matches.slice(0, 4).forEach((m, i) => {
+    lines.push(`${i + 1}. ${m.name} (Eligibility Probability: ${m.eligibilityProbability}%)`);
+  });
+
+  return lines.join("\n");
+}
+
+function validateGeneratedAnswer(answer, mode, intent) {
+  const text = String(answer || "").toLowerCase();
+  if (intent === "complaint_correction") {
+    return /(you are right|you’re right|you are correct|sorry|apologize)/.test(text);
+  }
+  if (mode === "focused") {
+    return !/(1\.\s|2\.\s|here are some relevant schemes)/.test(text);
+  }
+  return true;
+}
+
 function rankMatches(matches, profile) {
   const scored = normalizeMatches(matches).map((m) => scoreMatch(m, profile));
   const keep = scored.filter((m) => !m.hardReject);
@@ -446,51 +513,72 @@ app.post("/chat", async (req, res) => {
     session.updatedAt = Date.now();
     const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
     const previousSelectedScheme = session.selectedScheme || null;
+    const intentMeta = classifyIntent(canonicalQuestion, session);
+    const intent = intentMeta.intent;
 
-    console.log("\n------------------------------");
-    console.log("Session:", sessionId);
-    console.log("User question:", question);
-    console.log("Canonical question:", canonicalQuestion);
-
-    const focusedFromHistory = findFocusedScheme(canonicalQuestion, previousMatches);
-    const stickyFocusedScheme =
-      focusedFromHistory ||
-      (!focusedFromHistory && isDetailIntent(canonicalQuestion) && previousSelectedScheme ? previousSelectedScheme : null);
-
-    if (stickyFocusedScheme) {
-      const focusedRanked = scoreMatch(stickyFocusedScheme, mergedProfile);
-      session.selectedScheme = focusedRanked;
-      const focusedContext = buildFocusedContext(focusedRanked);
-      const answer = await generateChatResponse(
+    console.log(
+      JSON.stringify({
+        tag: "chat_turn",
+        sessionId,
+        userQuestion: question,
         canonicalQuestion,
-        focusedContext,
-        profileText(mergedProfile),
-        null,
-        "focused"
-      );
-      const localizedAnswer = await toUserLanguage(answer);
+        intent,
+        intentConfidence: intentMeta.confidence,
+        profileState: mergedProfile.state || null,
+      })
+    );
+
+    if (intent === "complaint_correction") {
+      session.selectedScheme = null;
+      const correctionQuery = mergedProfile.state
+        ? `${canonicalQuestion}\n\nStrictly for state: ${mergedProfile.state}`
+        : canonicalQuestion;
+      const embedding = await generateEmbedding(correctionQuery);
+      const rawMatches = await searchSchemes(embedding);
+      const guarded = applyStateGuardrails(rawMatches, mergedProfile);
+      const matches = rankMatches(guarded.matches, mergedProfile);
+      session.lastMatches = matches.slice(0, 10);
+      session.lastAssistantAction = "complaint_correction";
+      session.lastError = guarded.mismatchDetected ? "state_mismatch_detected" : null;
+      session.pendingQuestion = null;
+
+      let answer;
+      if (!matches.length) {
+        answer = `You are right. The previous response mixed the wrong state. I could not find strong ${mergedProfile.state || "state"}-specific matches right now, but I can retry with more profile details.`;
+      } else {
+        const context = buildContext(matches);
+        const modelAnswer = await generateChatResponse(
+          canonicalQuestion,
+          context,
+          profileText(mergedProfile),
+          null,
+          "list"
+        );
+        const acknowledged = `You are right, that was incorrect. I should only show ${mergedProfile.state || "your state"} (or central) schemes.\n\n`;
+        answer = validateGeneratedAnswer(modelAnswer, "list", "complaint_correction")
+          ? acknowledged + modelAnswer
+          : `${acknowledged}${buildDeterministicList(matches, mergedProfile.state)}`;
+      }
 
       return res.json({
         sessionId,
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer: localizedAnswer,
-        selectedScheme: focusedRanked.name,
-        matches: [
-          {
-            slug: focusedRanked.slug || null,
-            name: focusedRanked.name,
-            similarity: Number(focusedRanked.similarity || 0),
-            semanticScore: Number(focusedRanked.semanticScore.toFixed(2)),
-            ruleScore: focusedRanked.ruleScore,
-            finalScore: Number(focusedRanked.finalScore.toFixed(2)),
-            eligibilityProbability: focusedRanked.eligibilityProbability,
-          },
-        ],
+        answer: await toUserLanguage(answer),
+        quality: { stateMismatchDetected: guarded.mismatchDetected, droppedForState: guarded.droppedCount },
+        matches: matches.map((m) => ({
+          slug: m.slug || null,
+          name: m.name,
+          similarity: m.similarity,
+          semanticScore: Number(m.semanticScore.toFixed(2)),
+          ruleScore: m.ruleScore,
+          finalScore: Number(m.finalScore.toFixed(2)),
+          eligibilityProbability: m.eligibilityProbability,
+        })),
       });
     }
 
-    if (isCompareIntent(canonicalQuestion)) {
+    if (intent === "compare_request") {
       const comparePair = findCompareSchemes(canonicalQuestion, previousMatches);
       if (comparePair.length === 2) {
         const a = scoreMatch(comparePair[0], mergedProfile);
@@ -498,6 +586,8 @@ app.post("/chat", async (req, res) => {
         const context = buildCompareContext(a, b);
         const answer = await generateChatResponse(canonicalQuestion, context, profileText(mergedProfile), null, "compare");
         const localizedAnswer = await toUserLanguage(answer);
+        session.lastAssistantAction = "compare";
+        session.pendingQuestion = null;
         return res.json({
           sessionId,
           memory: mergedProfile,
@@ -514,6 +604,8 @@ app.post("/chat", async (req, res) => {
           })),
         });
       }
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "which two schemes to compare";
       return res.json({
         sessionId,
         memory: mergedProfile,
@@ -529,7 +621,7 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    if (isSelectionIntent(canonicalQuestion) && previousMatches.length) {
+    if (intent === "selection" && previousMatches.length) {
       const selected =
         findFocusedScheme(canonicalQuestion, previousMatches) ||
         normalizeMatches(previousMatches)[0] ||
@@ -539,7 +631,12 @@ app.post("/chat", async (req, res) => {
         session.selectedScheme = ranked;
         const context = buildFocusedContext(ranked);
         const answer = await generateChatResponse(canonicalQuestion, context, profileText(mergedProfile), null, "focused");
-        const localizedAnswer = await toUserLanguage(answer);
+        const finalAnswer = validateGeneratedAnswer(answer, "focused", intent)
+          ? answer
+          : buildFocusedContext(ranked);
+        const localizedAnswer = await toUserLanguage(finalAnswer);
+        session.lastAssistantAction = "focused";
+        session.pendingQuestion = null;
         return res.json({
           sessionId,
           memory: mergedProfile,
@@ -561,17 +658,62 @@ app.post("/chat", async (req, res) => {
       }
     }
 
+    const focusedFromHistory = findFocusedScheme(canonicalQuestion, previousMatches);
+    const stickyFocusedScheme =
+      focusedFromHistory ||
+      (intent === "detail_request" && previousSelectedScheme ? previousSelectedScheme : null);
+
+    if (intent === "detail_request" && stickyFocusedScheme) {
+      const focusedRanked = scoreMatch(stickyFocusedScheme, mergedProfile);
+      session.selectedScheme = focusedRanked;
+      const focusedContext = buildFocusedContext(focusedRanked);
+      const answer = await generateChatResponse(
+        canonicalQuestion,
+        focusedContext,
+        profileText(mergedProfile),
+        null,
+        "focused"
+      );
+      const finalAnswer = validateGeneratedAnswer(answer, "focused", intent)
+        ? answer
+        : `Here are details for ${focusedRanked.name}:\n\n${focusedContext}`;
+      session.lastAssistantAction = "focused";
+      session.pendingQuestion = null;
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(finalAnswer),
+        selectedScheme: focusedRanked.name,
+        matches: [
+          {
+            slug: focusedRanked.slug || null,
+            name: focusedRanked.name,
+            similarity: Number(focusedRanked.similarity || 0),
+            semanticScore: Number(focusedRanked.semanticScore.toFixed(2)),
+            ruleScore: focusedRanked.ruleScore,
+            finalScore: Number(focusedRanked.finalScore.toFixed(2)),
+            eligibilityProbability: focusedRanked.eligibilityProbability,
+          },
+        ],
+      });
+    }
+
     const query = `${canonicalQuestion}\n\nKnown profile: ${profileText(mergedProfile)}`;
     const embedding = await generateEmbedding(query);
-    let matches = await searchSchemes(embedding);
-    matches = rankMatches(matches, mergedProfile);
+    const rawMatches = await searchSchemes(embedding);
+    const guarded = applyStateGuardrails(rawMatches, mergedProfile);
+    let matches = rankMatches(guarded.matches, mergedProfile);
     session.lastMatches = matches.slice(0, 10);
+    session.lastError = guarded.mismatchDetected ? "state_mismatch_detected" : null;
 
     const nextQuestion = getNextQuestion(mergedProfile);
     const localizedNextQuestion = nextQuestion ? await toUserLanguage(nextQuestion) : null;
 
     if (!matches.length) {
-      if (isDetailIntent(canonicalQuestion) && previousMatches.length) {
+      if (intent === "detail_request" && previousMatches.length) {
+        session.lastAssistantAction = "clarify";
+        session.pendingQuestion = "which scheme do you mean";
         return res.json({
           sessionId,
           memory: mergedProfile,
@@ -588,6 +730,8 @@ app.post("/chat", async (req, res) => {
           })),
         });
       }
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = nextQuestion || null;
       return res.json({
         sessionId,
         memory: mergedProfile,
@@ -599,41 +743,10 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    const context = buildContext(matches);
     const focusedFromCurrent = findFocusedScheme(canonicalQuestion, matches);
-    if (focusedFromCurrent) {
-      session.selectedScheme = focusedFromCurrent;
-      const focusedContext = buildFocusedContext(focusedFromCurrent);
-      const answer = await generateChatResponse(
-        canonicalQuestion,
-        focusedContext,
-        profileText(mergedProfile),
-        null,
-        "focused"
-      );
-      const localizedAnswer = await toUserLanguage(answer);
-
-      return res.json({
-        sessionId,
-        memory: mergedProfile,
-        interview: { nextQuestion: null },
-        answer: localizedAnswer,
-        selectedScheme: focusedFromCurrent.name,
-        matches: [
-          {
-            slug: focusedFromCurrent.slug || null,
-            name: focusedFromCurrent.name,
-            similarity: focusedFromCurrent.similarity,
-            semanticScore: Number(focusedFromCurrent.semanticScore.toFixed(2)),
-            ruleScore: focusedFromCurrent.ruleScore,
-            finalScore: Number(focusedFromCurrent.finalScore.toFixed(2)),
-            eligibilityProbability: focusedFromCurrent.eligibilityProbability,
-          },
-        ],
-      });
-    }
-
-    if (isDetailIntent(canonicalQuestion)) {
+    if (intent === "detail_request" && !focusedFromCurrent && !previousSelectedScheme) {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "scheme name for details";
       return res.json({
         sessionId,
         memory: mergedProfile,
@@ -653,6 +766,40 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    if (intent === "detail_request" && focusedFromCurrent) {
+      session.selectedScheme = focusedFromCurrent;
+      const focusedContext = buildFocusedContext(focusedFromCurrent);
+      const answer = await generateChatResponse(
+        canonicalQuestion,
+        focusedContext,
+        profileText(mergedProfile),
+        null,
+        "focused"
+      );
+      const finalAnswer = validateGeneratedAnswer(answer, "focused", intent)
+        ? answer
+        : `Here are details for ${focusedFromCurrent.name}:\n\n${focusedContext}`;
+      session.lastAssistantAction = "focused";
+      session.pendingQuestion = null;
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(finalAnswer),
+        selectedScheme: focusedFromCurrent.name,
+        matches: matches.map((m) => ({
+          slug: m.slug || null,
+          name: m.name,
+          similarity: m.similarity,
+          semanticScore: Number(m.semanticScore.toFixed(2)),
+          ruleScore: m.ruleScore,
+          finalScore: Number(m.finalScore.toFixed(2)),
+          eligibilityProbability: m.eligibilityProbability,
+        })),
+      });
+    }
+
+    const context = buildContext(matches);
     const answer = await generateChatResponse(
       canonicalQuestion,
       context,
@@ -660,13 +807,19 @@ app.post("/chat", async (req, res) => {
       nextQuestion,
       "list"
     );
-    const localizedAnswer = await toUserLanguage(answer);
+    const listAnswer = validateGeneratedAnswer(answer, "list", intent)
+      ? answer
+      : buildDeterministicList(matches, mergedProfile.state);
+    const localizedAnswer = await toUserLanguage(listAnswer);
+    session.lastAssistantAction = "list";
+    session.pendingQuestion = nextQuestion || null;
 
     return res.json({
       sessionId,
       memory: mergedProfile,
       interview: { nextQuestion: localizedNextQuestion },
       answer: localizedAnswer,
+      quality: { stateMismatchDetected: guarded.mismatchDetected, droppedForState: guarded.droppedCount },
       matches: matches.map((m) => ({
         slug: m.slug || null,
         name: m.name,
