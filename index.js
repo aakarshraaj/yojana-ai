@@ -197,6 +197,19 @@ function classifyIntent(question, session) {
   if (!/[a-z0-9]/i.test(rawTrim) && rawTrim.length > 0) {
     return { intent: "smalltalk_noise", confidence: 0.99 };
   }
+  const lowSignalPhrases = [
+    "lets go",
+    "let s go",
+    "go ahead",
+    "start",
+    "continue",
+    "proceed",
+    "ok lets go",
+    "okay lets go",
+  ];
+  if (tokens.length <= 4 && lowSignalPhrases.some((p) => text === p || text.includes(p))) {
+    return { intent: "smalltalk_noise", confidence: 0.97 };
+  }
   const noiseWords = new Set([
     "lol",
     "haha",
@@ -244,6 +257,16 @@ function classifyIntent(question, session) {
   }
 
   return { intent: "new_discovery", confidence: 0.7 };
+}
+
+function hasMinimumDiscoverySignal(question, profile) {
+  const q = normalizeText(question);
+  const hasProfile = !!(profile.state || profile.profession || profile.category || profile.incomeAnnual || profile.landAcres);
+  const discoveryWords = /(scheme|scholarship|pension|benefit|loan|subsidy|support|help|apply|eligibility|yojana)/i.test(
+    question
+  );
+  const tokenCount = q.split(" ").filter(Boolean).length;
+  return hasProfile || discoveryWords || tokenCount >= 6;
 }
 
 function isCentralScheme(raw) {
@@ -623,6 +646,20 @@ app.post("/chat", async (req, res) => {
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await buildPendingClarifier(session, toUserLanguage),
+        matches: [],
+      });
+    }
+
+    if (intent === "new_discovery" && !hasMinimumDiscoverySignal(canonicalQuestion, mergedProfile)) {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "state and the support type you need";
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(
+          "Tell me your state and what support you need (scholarship, pension, farmer, business, health). Then I will suggest exact schemes."
+        ),
         matches: [],
       });
     }
