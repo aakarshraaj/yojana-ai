@@ -194,22 +194,8 @@ function classifyIntent(question, session) {
   const text = normalizeText(question);
   const tokens = text.split(" ").filter(Boolean);
   const rawTrim = String(question || "").trim();
-  if (!/[a-z0-9]/i.test(rawTrim) && rawTrim.length > 0) {
-    return { intent: "smalltalk_noise", confidence: 0.99 };
-  }
-  const lowSignalPhrases = [
-    "lets go",
-    "let s go",
-    "go ahead",
-    "start",
-    "continue",
-    "proceed",
-    "ok lets go",
-    "okay lets go",
-  ];
-  if (tokens.length <= 4 && lowSignalPhrases.some((p) => text === p || text.includes(p))) {
-    return { intent: "smalltalk_noise", confidence: 0.97 };
-  }
+  if (!/[a-z0-9]/i.test(rawTrim) && rawTrim.length > 0) return { intent: "smalltalk_noise", confidence: 0.99 };
+  if (isLikelyGibberish(rawTrim)) return { intent: "nonsense_noise", confidence: 0.99 };
   const noiseWords = new Set([
     "lol",
     "haha",
@@ -259,14 +245,40 @@ function classifyIntent(question, session) {
   return { intent: "new_discovery", confidence: 0.7 };
 }
 
-function hasMinimumDiscoverySignal(question, profile) {
+function isLikelyGibberish(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  const lettersOnly = t.replace(/[^a-z]/g, "");
+  if (!lettersOnly) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  const veryLongSingle = words.length === 1 && words[0].length >= 10;
+  const vowelCount = (lettersOnly.match(/[aeiou]/g) || []).length;
+  const vowelRatio = vowelCount / lettersOnly.length;
+  const hasBigConsonantRun = /[bcdfghjklmnpqrstvwxyz]{6,}/.test(lettersOnly);
+  const repeatedGarble = /(.)\1{4,}/.test(lettersOnly);
+  return (veryLongSingle && (vowelRatio < 0.2 || hasBigConsonantRun)) || repeatedGarble;
+}
+
+function discoverySignal(question, profile, session) {
   const q = normalizeText(question);
+  const tokens = q.split(" ").filter(Boolean);
   const hasProfile = !!(profile.state || profile.profession || profile.category || profile.incomeAnnual || profile.landAcres);
-  const discoveryWords = /(scheme|scholarship|pension|benefit|loan|subsidy|support|help|apply|eligibility|yojana)/i.test(
+  const schemeIntent = /(scheme|scholarship|pension|benefit|loan|subsidy|support|help|apply|eligibility|yojana)/i.test(
     question
   );
-  const tokenCount = q.split(" ").filter(Boolean).length;
-  return hasProfile || discoveryWords || tokenCount >= 6;
+  const actionIntent = /(find|need|want|show|give|suggest|recommend|tell)/i.test(question);
+  const hasNumbers = /\d/.test(question);
+  const referencesSelected =
+    !!session.selectedScheme && tokenSet(question).size > 0 && tokenSet(session.selectedScheme.name).size > 0;
+
+  let score = 0;
+  if (hasProfile) score += 2;
+  if (schemeIntent) score += 3;
+  if (actionIntent) score += 1;
+  if (hasNumbers) score += 1;
+  if (tokens.length >= 6) score += 1;
+  if (referencesSelected) score += 1;
+  return score;
 }
 
 function isCentralScheme(raw) {
@@ -534,6 +546,12 @@ async function buildPendingClarifier(session, toUserLanguage) {
   return toUserLanguage(`Please answer this so I can proceed: ${pending}.`);
 }
 
+async function buildPurposeGuidance(toUserLanguage) {
+  return toUserLanguage(
+    "I can help you discover government schemes, compare options, or guide applications. Tell me your state and what support you need (scholarship, pension, farmer, business, health)."
+  );
+}
+
 function rankMatches(matches, profile) {
   const scored = normalizeMatches(matches).map((m) => scoreMatch(m, profile));
   const keep = scored.filter((m) => !m.hardReject);
@@ -638,6 +656,20 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    if (intent === "nonsense_noise") {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "state and support type";
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(
+          "I could not understand that text. Please write your request in a sentence, for example: 'I am from Maharashtra and need scholarship schemes.'"
+        ),
+        matches: [],
+      });
+    }
+
     if (intent === "unclear_ack") {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = session.pendingQuestion || "your exact request (discover, compare, or details)";
@@ -650,16 +682,14 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    if (intent === "new_discovery" && !hasMinimumDiscoverySignal(canonicalQuestion, mergedProfile)) {
+    if (intent === "new_discovery" && discoverySignal(canonicalQuestion, mergedProfile, session) < 3) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "state and the support type you need";
       return res.json({
         sessionId,
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer: await toUserLanguage(
-          "Tell me your state and what support you need (scholarship, pension, farmer, business, health). Then I will suggest exact schemes."
-        ),
+        answer: await buildPurposeGuidance(toUserLanguage),
         matches: [],
       });
     }
