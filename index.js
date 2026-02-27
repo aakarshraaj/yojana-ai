@@ -329,6 +329,17 @@ function discoverySignal(question, profile, session) {
   return score;
 }
 
+function inferSupportType(question) {
+  const q = String(question || "").toLowerCase();
+  if (/(upsc|cse|exam|coaching|preparation)/.test(q)) return "exam_support";
+  if (/(scholarship|education|student)/.test(q)) return "scholarship";
+  if (/(pension|senior|old age)/.test(q)) return "pension";
+  if (/(farmer|agri|kisan|crop)/.test(q)) return "farmer";
+  if (/(business|shop|startup|loan|msme|entrepreneur)/.test(q)) return "business";
+  if (/(health|medical|hospital|insurance)/.test(q)) return "health";
+  return null;
+}
+
 function isCentralScheme(raw) {
   return /(pradhan mantri|pm-|government of india|ministry of|national scheme|centrally sponsored|all india|central government)/i.test(
     raw
@@ -635,6 +646,22 @@ async function buildPurposeGuidance(toUserLanguage) {
   );
 }
 
+async function buildContextualGuidance(question, profile, toUserLanguage) {
+  const supportType = inferSupportType(question);
+  if (supportType === "exam_support") {
+    if (!profile.state) {
+      return toUserLanguage(
+        "For UPSC/exam support schemes, tell me your state first. Then I can suggest coaching/scholarship schemes relevant to your state and category."
+      );
+    }
+    return toUserLanguage(
+      "Tell me your category and income range. I will find UPSC/coaching/scholarship schemes for your profile."
+    );
+  }
+
+  return buildPurposeGuidance(toUserLanguage);
+}
+
 async function buildProgressClarifier(profile, toUserLanguage) {
   const summary = [];
   if (profile.age != null) summary.push(`age: ${profile.age}`);
@@ -812,12 +839,15 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    if (intent === "new_discovery" && discoverySignal(canonicalQuestion, mergedProfile, session) < 3) {
+    const explicitUserAsk = /(scheme|yojana|benefit|scholarship|upsc|exam|coaching|loan|support|help)/i.test(
+      canonicalQuestion
+    );
+    if (intent === "new_discovery" && discoverySignal(canonicalQuestion, mergedProfile, session) < 3 && !explicitUserAsk) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "state and the support type you need";
       const targetedPrompt = hasProfileSignal(mergedProfile)
         ? await buildProgressClarifier(mergedProfile, toUserLanguage)
-        : await buildPurposeGuidance(toUserLanguage);
+        : await buildContextualGuidance(canonicalQuestion, mergedProfile, toUserLanguage);
       return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
