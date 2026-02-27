@@ -1,20 +1,44 @@
 [
   {"id":"noise_001","input":"lol","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
-  {"id":"noise_002","input":"haha","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
-  {"id":"noise_003","input":"🔥🔥","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"noise_002","input":"acha","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"noise_003","input":"let's go","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
   {"id":"nonsense_001","input":"kusgdfkgfksjgzkshklhlksfg","expected_intent":"nonsense_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"nonsense_002","input":".....","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"nonsense_003","input":"🔥🔥🔥","expected_intent":"smalltalk_noise","expected_mode":"clarify","retrieval":"blocked"},
+
   {"id":"ack_001","input":"yes","expected_intent":"unclear_ack","expected_mode":"clarify","retrieval":"blocked"},
-  {"id":"discover_001","input":"I am a student in Karnataka, income 1.5 lakh, any scholarship?","expected_intent":"new_discovery","expected_mode":"list","retrieval":"allowed"},
-  {"id":"discover_002","input":"Maharashtra me farmer hu, 2 acre land","expected_intent":"new_discovery","expected_mode":"list","retrieval":"allowed"},
-  {"id":"discover_003","input":"UPSC CSE coaching schemes?","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
+  {"id":"ack_002","input":"ok","expected_intent":"unclear_ack","expected_mode":"clarify","retrieval":"blocked"},
+
+  {"id":"discover_001","input":"I am a student in Karnataka, income 1.5 lakh, any scholarship?","expected_intent":"new_discovery","expected_mode":"list_or_clarify","retrieval":"allowed"},
+  {"id":"discover_002","input":"mai bihar se hu income low hai kaunsi yojana milegi","expected_intent":"new_discovery","expected_mode":"list_or_clarify","retrieval":"allowed"},
+  {"id":"discover_003","input":"mp se hu student no income","expected_intent":"new_discovery","expected_mode":"list_or_clarify","retrieval":"allowed"},
+  {"id":"discover_004","input":"Maharashtra me farmer hu 2 acre zameen hai","expected_intent":"new_discovery","expected_mode":"list_or_clarify","retrieval":"allowed"},
+  {"id":"discover_005","input":"meri medical shop hai loan yojana batao","expected_intent":"new_discovery","expected_mode":"list_or_clarify","retrieval":"allowed"},
+  {"id":"discover_006","input":"UPSC CSE 2026 mains ke liye scheme hai kya","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
+  {"id":"discover_007","input":"NEET coaching scholarship chahiye","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
+
   {"id":"complaint_001","input":"I asked Arunachal, why Rajasthan?","expected_intent":"complaint_correction","expected_mode":"list","retrieval":"allowed"},
+  {"id":"complaint_002","input":"maine maharashtra bola tha dusre state kyu diya","expected_intent":"complaint_correction","expected_mode":"list","retrieval":"allowed"},
+
   {"id":"detail_001","input":"give documents for this scheme","expected_intent":"detail_request","expected_mode":"focused","retrieval":"blocked_or_optional"},
   {"id":"detail_002","input":"office address in Bokaro","expected_intent":"detail_request","expected_mode":"focused","retrieval":"blocked_or_optional"},
-  {"id":"detail_003","input":"give more details","expected_intent":"detail_request","expected_mode":"clarify","retrieval":"blocked"},
+  {"id":"detail_003","input":"apply link bhejo","expected_intent":"detail_request","expected_mode":"focused","retrieval":"blocked_or_optional"},
+  {"id":"detail_004","input":"more details do","expected_intent":"detail_request","expected_mode":"clarify","retrieval":"blocked"},
+
   {"id":"compare_001","input":"compare scheme 1 and scheme 2","expected_intent":"compare_request","expected_mode":"compare","retrieval":"blocked_or_optional"},
+  {"id":"compare_002","input":"PMKVY aur NULM me kaunsa better","expected_intent":"compare_request","expected_mode":"compare","retrieval":"blocked_or_optional"},
+
   {"id":"select_001","input":"go with first one","expected_intent":"selection","expected_mode":"focused","retrieval":"blocked"},
+  {"id":"select_002","input":"yeh wala choose karo","expected_intent":"selection","expected_mode":"focused","retrieval":"blocked"},
+
   {"id":"clarify_001","input":"Jharkhand","expected_intent":"clarification_answer","expected_mode":"clarify_or_list","retrieval":"allowed_or_blocked"},
   {"id":"clarify_002","input":"income 0","expected_intent":"clarification_answer","expected_mode":"clarify_or_list","retrieval":"allowed_or_blocked"},
+  {"id":"clarify_003","input":"25 saal","expected_intent":"clarification_answer","expected_mode":"clarify_or_list","retrieval":"allowed_or_blocked"},
+  {"id":"clarify_004","input":"OBC","expected_intent":"clarification_answer","expected_mode":"clarify_or_list","retrieval":"allowed_or_blocked"},
+
   {"id":"lang_hi_001","input":"मुझे छात्रवृत्ति योजना चाहिए","language":"hi","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
-  {"id":"lang_mr_001","input":"मला शिष्यवृत्ती योजना पाहिजे","language":"mr","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"}
+  {"id":"lang_hi_002","input":"मैं ओबीसी हूं और आय शून्य है","language":"hi","expected_intent":"clarification_answer","expected_mode":"clarify_or_list","retrieval":"allowed_or_blocked"},
+  {"id":"lang_mr_001","input":"मला शिष्यवृत्ती योजना पाहिजे","language":"mr","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
+  {"id":"lang_mr_002","input":"मी २५ वर्षांचा आहे आणि माझं मेडिकल दुकान आहे","language":"mr","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"},
+  {"id":"lang_mix_001","input":"Mai OBC hu aur income 1 lakh scholarship चाहिए","expected_intent":"new_discovery","expected_mode":"clarify_or_list","retrieval":"allowed"}
 ]

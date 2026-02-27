@@ -1,7 +1,6 @@
-# Conversation Test Matrix (POC)
+# Conversation Test Matrix (India Tier 2/3/4)
 
-This file defines user interaction styles, expected backend intent/mode, and retrieval policy.
-Use this as a regression checklist before each deploy.
+This matrix is tuned for Indian users across tier 2/3/4 cities and towns, including Hinglish, Marathi/Hindi mixing, short-form text, and low-formality language.
 
 ## Contract
 - `mode=list`: return 3-5 schemes
@@ -11,122 +10,107 @@ Use this as a regression checklist before each deploy.
 - `retrieval=blocked`: do not run vector retrieval
 - `retrieval=allowed`: vector retrieval allowed
 
-## Core Categories
+## Persona/Linguistic Styles
 
-### 1) Noise / smalltalk
-- Style: `lol`, `haha`, `ok`, `hmm`, `great`, `damn`, emoji-only
-- Expected: `intent=smalltalk_noise`, `mode=clarify`, `retrieval=blocked`
-- Response style: short direction to purpose + what to provide next
+### A) Formal English
+- Example: `I am a 26-year-old student from Indore. Suggest scholarship schemes.`
+- Expected: direct profile extraction + list/clarify
 
-### 2) Gibberish / nonsense
-- Style: `kusgdfkgfksjgzkshklhlksfg`, `;;;;`, random char bursts
-- Expected: `intent=nonsense_noise`, `mode=clarify`, `retrieval=blocked`
-- Response style: "I couldn't understand, please write one sentence with state + need"
+### B) Hinglish (Roman)
+- Example: `mai bihar se hu, income low hai, kaunsi yojana milegi?`
+- Expected: parse state + income + request intent
 
-### 3) Ambiguous acknowledgement
-- Style: `yes`, `no`, `sure`, `maybe`, `done`
-- Expected: `intent=unclear_ack`, `mode=clarify`, `retrieval=blocked`
-- Response style: ask pending question explicitly
+### C) Hindi in Devanagari
+- Example: `मैं उत्तर प्रदेश से हूं, मुझे स्वरोजगार योजना चाहिए`
+- Expected: translate canonical to English internally, respond in Hindi if requested
 
-### 4) New discovery request (clear)
-- Style: `I am a farmer in Maharashtra, income 2 lakh`
-- Expected: `intent=new_discovery`, `mode=list`, `retrieval=allowed`
-- Response style: relevant schemes + next missing field if needed
+### D) Marathi in Devanagari
+- Example: `मी नाशिकचा आहे, मला व्यवसायासाठी योजना पाहिजे`
+- Expected: canonicalize, preserve session/mode in Marathi flow
 
-### 5) New discovery request (topic-specific)
-- Style: `UPSC CSE coaching schemes?`
-- Expected: `intent=new_discovery`, `mode=clarify/list`, `retrieval=allowed`
-- Response style: targeted follow-up (state/category/income) if profile missing
+### E) Mixed scripts
+- Example: `Mai OBC hu aur income 1 lakh, scholarship चाहिए`
+- Expected: robust extraction from mixed script utterance
 
-### 6) Complaint correction
+### F) Local shorthand / low punctuation
+- Example: `mp se hu student no income`
+- Expected: still extract profile fields and ask only next missing field
+
+### G) Low-signal chatter
+- Example: `lol`, `acha`, `hmm`, `let's go`
+- Expected: clarify only, retrieval blocked
+
+### H) Garbled / nonsense
+- Example: `ksjdfhksjdfh`, `.....`, `🔥🔥🔥`
+- Expected: "could not understand" guidance, retrieval blocked
+
+## Interaction Modes
+
+### 1) New discovery request
+- Style: full/partial profile + scheme ask
+- Expected: `intent=new_discovery`, `mode=list|clarify`, retrieval allowed if signal sufficient
+
+### 2) Complaint correction
 - Style: `I asked Arunachal, why Rajasthan?`
-- Expected: `intent=complaint_correction`, `mode=list`, `retrieval=allowed`
-- Must: acknowledge error first, clear selected scheme, state-guarded rerank
+- Expected: acknowledge error, clear focused scheme, strict state rerank, corrected list
 
-### 7) Detail request (selected scheme)
-- Style: `give documents`, `office address`, `apply link`
-- Expected: `intent=detail_request`, `mode=focused`, `retrieval=blocked/optional`
-- Must: stay on selected scheme
+### 3) Detail request on selected scheme
+- Style: `documents de`, `office address`, `apply link`
+- Expected: `mode=focused`, no list of alternatives
 
-### 8) Detail request (no scheme specified)
-- Style: `give more details`
-- Expected: `intent=detail_request`, `mode=clarify`, `retrieval=blocked`
-- Must: ask which scheme + show shortlist options
+### 4) Detail request without scheme reference
+- Style: `more details do`
+- Expected: ask which scheme from shortlist (`mode=clarify`)
 
-### 9) Compare request
-- Style: `compare A vs B`, `which is better between...`
-- Expected: `intent=compare_request`, `mode=compare`, `retrieval=blocked/optional`
-- Must: side-by-side for exactly two schemes
+### 5) Compare request
+- Style: `A aur B compare karo`, `which better`
+- Expected: exactly two schemes in compare output
 
-### 10) Selection request
-- Style: `go with first one`, `I choose this scheme`
-- Expected: `intent=selection`, `mode=focused`, `retrieval=blocked`
-- Must: lock selected scheme in session
+### 6) Selection request
+- Style: `first wala`, `yeh wala select`
+- Expected: lock selected scheme and continue focused mode
 
-### 11) Clarification answers
-- Style: `Maharashtra`, `OBC`, `income 1.5 lakh`
-- Expected: `intent=clarification_answer`, `mode=clarify/list` based on completion
-- Must: update profile memory and ask next missing field
+### 7) Clarification answers
+- Style: short profile answers (`Jharkhand`, `OBC`, `income 0`)
+- Expected: update memory and ask next missing field
 
-### 12) Language turns
-- Style: Hindi, Marathi, Hinglish
-- Expected: canonicalize to English internally; respond in requested language
-- Must: keep session, intent, and selection behavior unchanged across languages
+## Tier 2/3/4 Context Cases
+
+### Education / exam support
+- `UPSC CSE mains ke liye scheme hai kya`
+- `NEET coaching ke liye koi scholarship`
+- `ITI student hu madad chahiye`
+
+### Livelihood / micro business
+- `meri medical shop hai loan yojana batao`
+- `silai machine ke liye mahila yojana`
+- `chhota kirana dukaan hai subsidy milegi?`
+
+### Agriculture / rural
+- `2 acre zameen hai kisan hu`
+- `pm kisan ke alawa aur kya`
+- `drip irrigation ke liye support`
+
+### Welfare / identity-linked
+- `BPL hu`, `ration card hai`, `widow pension`
+- `SC category hu scholarship`
+- `divyang certificate hai koi yojana`
 
 ## High-Risk Edge Cases
-
-1. User gives only profession (`I'm a student`) -> ask state next, not generic boilerplate.
-2. User gives only income (`no income`) -> capture as `0`, ask state/profession.
-3. User gives age in Hindi (`25 saal`) -> capture age.
-4. User uses Hinglish roman text -> still extract profile + intent.
-5. User asks details right after complaint -> do not jump to unrelated scheme.
-6. User asks `let's go` after prior shortlist -> clarify what action (discover/compare/details).
-7. User asks `yes` after bot asks question -> treat as unclear ack unless yes/no question context.
-8. User asks unrelated domain (`weather in Delhi`) -> clarify scope: government schemes only.
-9. User asks harmful/illegal content -> refuse and redirect.
-10. User asks empty/whitespace -> 400 with friendly message.
-
-## Golden Test Utterances (minimum)
-
-### Noise / nonsense
-- `lol`
-- `haha`
-- `...`
-- `🔥🔥🔥`
-- `kusgdfkgfksjgzkshklhlksfg`
-
-### Discovery
-- `I am a 25 year old student in Karnataka, income 1.5 lakh. Any scholarships?`
-- `Maharashtra me farmer hu, 2 acre zameen hai`
-- `UPSC CSE mains support schemes?`
-
-### Complaint
-- `I asked for Arunachal, why are you giving Rajasthan schemes?`
-
-### Focused follow-up
-- `Give me documents for this scheme`
-- `Where is offline office in Bokaro?`
-- `Application link bhejo`
-
-### Compare
-- `Compare scheme 1 and scheme 2`
-- `Which is better between PMKVY and NULM?`
-
-### Ambiguous ack
-- `yes`
-- `no`
-- `ok`
-
-### Clarification answers
-- `Jharkhand`
-- `OBC`
-- `income 0`
-- `age 17`
+1. User gives only profession -> ask state next.
+2. User gives only income (`no income`) -> capture `0`, ask next field.
+3. User gives age in Hindi/Marathi (`25 saal`, `25 वर्ष`) -> capture age.
+4. User switches language mid-session -> preserve memory + mode.
+5. User detail request after complaint -> do not jump unrelated.
+6. User says `yes`/`ok` after question -> ask pending question explicitly.
+7. User asks out-of-scope (`weather`, `movie`) -> scope redirect.
+8. User asks harmful/illegal guidance -> refuse and redirect.
 
 ## Regression Acceptance Rules
 - No list output for noise/nonsense/unclear ack.
-- Complaint must acknowledge + correct state.
-- Focused mode must not list alternatives.
-- Compare mode must mention exactly two schemes.
-- Session continuity must persist `selectedScheme` and profile fields.
-- Language switch must preserve intent and mode behavior.
+- Complaint response must acknowledge correction.
+- Focused mode must never output a fresh recommendation list.
+- Compare mode must show exactly two schemes.
+- State guardrail must filter mismatched state schemes.
+- Session continuity must persist profile + selectedScheme.
+- Hindi/Marathi requests must preserve intent/mode behavior.

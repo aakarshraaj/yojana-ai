@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { randomUUID, createHash } = require("crypto");
-const { generateEmbedding, generateChatResponse, translateText } = require("./lib/openai");
+const { generateEmbedding, generateChatResponse, translateText, classifyIntentModel } = require("./lib/openai");
 const { searchSchemes } = require("./lib/supabase");
 
 const requiredEnv = ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
@@ -284,6 +284,42 @@ function classifyIntent(question, session) {
   }
 
   return { intent: "new_discovery", confidence: 0.7 };
+}
+
+async function classifyIntentSmart(question, session) {
+  try {
+    const modelResult = await classifyIntentModel(question, {
+      pendingQuestion: session.pendingQuestion || null,
+      hasSelectedScheme: !!session.selectedScheme,
+      lastAssistantAction: session.lastAssistantAction || null,
+    });
+
+    const validIntents = new Set([
+      "smalltalk_noise",
+      "nonsense_noise",
+      "unclear_ack",
+      "complaint_correction",
+      "compare_request",
+      "selection",
+      "detail_request",
+      "clarification_answer",
+      "new_discovery",
+    ]);
+
+    if (modelResult && validIntents.has(modelResult.intent)) {
+      const confidence = Number(modelResult.confidence);
+      return {
+        intent: modelResult.intent,
+        confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.75,
+        source: "model",
+      };
+    }
+  } catch (_) {
+    // fall back below
+  }
+
+  const fallback = classifyIntent(question, session);
+  return { ...fallback, source: "rule" };
 }
 
 function isLikelyGibberish(text) {
@@ -761,7 +797,7 @@ app.post("/chat", async (req, res) => {
     session.updatedAt = Date.now();
     const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
     const previousSelectedScheme = session.selectedScheme || null;
-    const intentMeta = classifyIntent(canonicalQuestion, session);
+    const intentMeta = await classifyIntentSmart(canonicalQuestion, session);
     const intent = intentMeta.intent;
     const canonicalNormalized = normalizeText(canonicalQuestion);
     const isRepeatedLowSignal =
@@ -778,6 +814,7 @@ app.post("/chat", async (req, res) => {
         canonicalQuestion,
         intent,
         intentConfidence: intentMeta.confidence,
+        intentSource: intentMeta.source || "rule",
         profileState: mergedProfile.state || null,
       })
     );
@@ -999,6 +1036,39 @@ app.post("/chat", async (req, res) => {
     const stickyFocusedScheme =
       focusedFromHistory ||
       (intent === "detail_request" && previousSelectedScheme ? previousSelectedScheme : null);
+
+    if ((intent === "detail_request" || intent === "selection") && previousSelectedScheme && !focusedFromHistory) {
+      const forcedFocused = scoreMatch(previousSelectedScheme, mergedProfile);
+      session.selectedScheme = forcedFocused;
+      const focusedContext = buildFocusedContext(forcedFocused);
+      const answer = await generateValidatedModeAnswer({
+        question: canonicalQuestion,
+        context: focusedContext,
+        memoryContext: profileText(mergedProfile),
+        mode: "focused",
+        intent,
+        fallbackAnswer: `Here are details for ${forcedFocused.name}:\n\n${focusedContext}`,
+      });
+      session.lastAssistantAction = "focused";
+      session.pendingQuestion = null;
+      return respond({
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(answer),
+        selectedScheme: forcedFocused.name,
+        matches: [
+          {
+            slug: forcedFocused.slug || null,
+            name: forcedFocused.name,
+            similarity: Number(forcedFocused.similarity || 0),
+            semanticScore: Number(forcedFocused.semanticScore.toFixed(2)),
+            ruleScore: forcedFocused.ruleScore,
+            finalScore: Number(forcedFocused.finalScore.toFixed(2)),
+            eligibilityProbability: forcedFocused.eligibilityProbability,
+          },
+        ],
+      });
+    }
 
     if (intent === "detail_request" && stickyFocusedScheme) {
       const focusedRanked = scoreMatch(stickyFocusedScheme, mergedProfile);
