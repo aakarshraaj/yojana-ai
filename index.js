@@ -193,6 +193,10 @@ function getNextQuestion(profile) {
 function classifyIntent(question, session) {
   const text = normalizeText(question);
   const tokens = text.split(" ").filter(Boolean);
+  const rawTrim = String(question || "").trim();
+  if (!/[a-z0-9]/i.test(rawTrim) && rawTrim.length > 0) {
+    return { intent: "smalltalk_noise", confidence: 0.99 };
+  }
   const noiseWords = new Set([
     "lol",
     "haha",
@@ -219,6 +223,11 @@ function classifyIntent(question, session) {
     tokens.length <= 3 &&
     tokens.every((t) => noiseWords.has(t) || /^ha+$/.test(t) || /^he+$/.test(t));
   if (isNoiseText) return { intent: "smalltalk_noise", confidence: 0.98 };
+
+  const ackWords = new Set(["yes", "no", "yep", "nope", "maybe", "sure", "ok", "okay", "done"]);
+  if (tokens.length > 0 && tokens.length <= 2 && tokens.every((t) => ackWords.has(t))) {
+    return { intent: "unclear_ack", confidence: 0.9 };
+  }
 
   const hasStateComplaint =
     /(i asked|why|wrong|instead|you gave|you are giving|other state|another state|not.*state)/i.test(question) &&
@@ -497,6 +506,11 @@ async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
   return toUserLanguage(base);
 }
 
+async function buildPendingClarifier(session, toUserLanguage) {
+  const pending = session.pendingQuestion || "what you need help with";
+  return toUserLanguage(`Please answer this so I can proceed: ${pending}.`);
+}
+
 function rankMatches(matches, profile) {
   const scored = normalizeMatches(matches).map((m) => scoreMatch(m, profile));
   const keep = scored.filter((m) => !m.hardReject);
@@ -558,6 +572,12 @@ app.post("/chat", async (req, res) => {
     const previousSelectedScheme = session.selectedScheme || null;
     const intentMeta = classifyIntent(canonicalQuestion, session);
     const intent = intentMeta.intent;
+    const canonicalNormalized = normalizeText(canonicalQuestion);
+    const isRepeatedLowSignal =
+      session.lastCanonicalQuestion &&
+      session.lastCanonicalQuestion === canonicalNormalized &&
+      canonicalNormalized.split(" ").filter(Boolean).length <= 3;
+    session.lastCanonicalQuestion = canonicalNormalized;
 
     console.log(
       JSON.stringify({
@@ -571,6 +591,18 @@ app.post("/chat", async (req, res) => {
       })
     );
 
+    if (isRepeatedLowSignal) {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = session.pendingQuestion || "what you need help with";
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage("I still need a specific request. Tell me your state and what scheme help you want."),
+        matches: [],
+      });
+    }
+
     if (intent === "smalltalk_noise") {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "user intent clarification";
@@ -579,6 +611,18 @@ app.post("/chat", async (req, res) => {
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await buildSmalltalkClarifier(session, mergedProfile, toUserLanguage),
+        matches: [],
+      });
+    }
+
+    if (intent === "unclear_ack") {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = session.pendingQuestion || "your exact request (discover, compare, or details)";
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await buildPendingClarifier(session, toUserLanguage),
         matches: [],
       });
     }
