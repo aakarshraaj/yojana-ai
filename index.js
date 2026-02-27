@@ -192,6 +192,34 @@ function getNextQuestion(profile) {
 
 function classifyIntent(question, session) {
   const text = normalizeText(question);
+  const tokens = text.split(" ").filter(Boolean);
+  const noiseWords = new Set([
+    "lol",
+    "haha",
+    "hahaha",
+    "ok",
+    "okay",
+    "hmm",
+    "hmmm",
+    "huh",
+    "yo",
+    "hi",
+    "hello",
+    "hey",
+    "thanks",
+    "thank",
+    "nice",
+    "great",
+    "cool",
+    "h",
+    "k",
+  ]);
+  const isNoiseText =
+    tokens.length > 0 &&
+    tokens.length <= 3 &&
+    tokens.every((t) => noiseWords.has(t) || /^ha+$/.test(t) || /^he+$/.test(t));
+  if (isNoiseText) return { intent: "smalltalk_noise", confidence: 0.98 };
+
   const hasStateComplaint =
     /(i asked|why|wrong|instead|you gave|you are giving|other state|another state|not.*state)/i.test(question) &&
     /(state|arunachal|maharashtra|jharkhand|rajasthan|gujarat|karnataka|punjab|haryana)/i.test(question);
@@ -454,6 +482,21 @@ function validateGeneratedAnswer(answer, mode, intent) {
   return true;
 }
 
+async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
+  const hasProfile = !!(profile.state || profile.profession || profile.category || profile.incomeAnnual || profile.landAcres);
+  const selectedScheme = session.selectedScheme?.name || null;
+  let base;
+  if (selectedScheme) {
+    base = `If you want, I can continue with ${selectedScheme}. Ask for documents, eligibility, apply link, office address, or contact details.`;
+  } else if (hasProfile) {
+    base = "Tell me what you want next: find new schemes, compare two schemes, or detailed help for one scheme.";
+  } else {
+    base =
+      "I can help with schemes. Share your state and what support you need (scholarship, pension, farmer, business, health).";
+  }
+  return toUserLanguage(base);
+}
+
 function rankMatches(matches, profile) {
   const scored = normalizeMatches(matches).map((m) => scoreMatch(m, profile));
   const keep = scored.filter((m) => !m.hardReject);
@@ -527,6 +570,18 @@ app.post("/chat", async (req, res) => {
         profileState: mergedProfile.state || null,
       })
     );
+
+    if (intent === "smalltalk_noise") {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "user intent clarification";
+      return res.json({
+        sessionId,
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await buildSmalltalkClarifier(session, mergedProfile, toUserLanguage),
+        matches: [],
+      });
+    }
 
     if (intent === "complaint_correction") {
       session.selectedScheme = null;
