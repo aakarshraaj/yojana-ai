@@ -264,6 +264,15 @@ function isResetCommand(text) {
   return /(reset profile|start over|new chat|clear memory|forget details|forget profile)/i.test(String(text || ""));
 }
 
+function isDisengageText(text) {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+  if (/\b(no income|zero income|without income)\b/.test(raw)) return false;
+  return /\b(no|nope|nah|not now|later|stop|cancel|leave it|drop it|skip|nothing|i don't want|i dont want|don't want|dont want|not interested|no thanks|bye)\b/.test(
+    raw
+  );
+}
+
 function mergeProfile(oldProfile, newProfile) {
   return {
     state: newProfile.state || oldProfile.state || null,
@@ -791,7 +800,18 @@ async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
 }
 
 async function buildPendingClarifier(session, toUserLanguage) {
-  const pending = session.pendingQuestion || "what you need help with";
+  const pendingRaw = String(session.pendingQuestion || "").toLowerCase();
+  const pendingMap = {
+    "user intent clarification": "your exact request (discover, compare, or scheme details)",
+    "state and support type": "your state and support type",
+    "state and exact support you need": "your state and exact support you need",
+    "state and the support type you need": "your state and support type",
+    "which scheme do you mean": "which scheme you mean",
+    "scheme name for details": "the exact scheme name for details",
+    "which two schemes to compare": "which two schemes you want to compare",
+    "fill state, age, category, occupation, income, and need": "your state and what support you need",
+  };
+  const pending = pendingMap[pendingRaw] || session.pendingQuestion || "what you need help with";
   return toUserLanguage(`Please answer this so I can proceed: ${pending}.`);
 }
 
@@ -944,6 +964,20 @@ app.post("/chat", requireAuth, async (req, res) => {
     session.updatedAt = Date.now();
     const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
     const previousSelectedScheme = session.selectedScheme || null;
+
+    if (isDisengageText(canonicalQuestion)) {
+      session.lastAssistantAction = "paused";
+      session.pendingQuestion = null;
+      return respond({
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(
+          "No problem. I will pause here. If you want to continue later, send your state and need, or ask details for a scheme name."
+        ),
+        matches: [],
+      });
+    }
+
     const intentMeta = await classifyIntentSmart(canonicalQuestion, session);
     const intent = intentMeta.intent;
     const canonicalNormalized = normalizeText(canonicalQuestion);
@@ -990,7 +1024,7 @@ app.post("/chat", requireAuth, async (req, res) => {
 
     if (intent === "smalltalk_noise") {
       session.lastAssistantAction = "clarify";
-      session.pendingQuestion = "user intent clarification";
+      session.pendingQuestion = "your exact request (discover, compare, or scheme details)";
       return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
