@@ -344,6 +344,7 @@ function classifyIntent(question, session) {
   if (hasStateComplaint) return { intent: "complaint_correction", confidence: 0.95 };
 
   if (isCompareIntent(question)) return { intent: "compare_request", confidence: 0.9 };
+  if (extractSelectionIndex(question) != null) return { intent: "selection", confidence: 0.9 };
   if (isSelectionIntent(question)) return { intent: "selection", confidence: 0.85 };
   if (isDetailIntent(question)) return { intent: "detail_request", confidence: 0.8 };
 
@@ -536,7 +537,7 @@ function tokenSet(text) {
 }
 
 function isDetailIntent(question) {
-  return /(more|detail|about|apply|application|process|how to|how do|documents|document|eligibility|link|website|form|office|address|contact|helpline)/i.test(
+  return /(more|detail|details|about|apply|application|process|how to|how do|documents|document|eligibility|link|website|form|office|address|contact|helpline|baare|bare|batao|samjhao|apply kaise|kagaz|dastavez|mahiti|tapshil|जानकारी|विवरण|दस्तावेज|लिंक|पता|कार्यालय|माहिती|तपशील)/i.test(
     question
   );
 }
@@ -546,7 +547,56 @@ function isCompareIntent(question) {
 }
 
 function isSelectionIntent(question) {
-  return /(select|choose|pick|go with|finalize|this one|that one|first one|second one)/i.test(question);
+  return /(^\s*\d{1,2}\s*$|select|choose|pick|go with|finalize|this one|that one|first one|second one|third one|option\s*\d{1,2}|scheme\s*\d{1,2}|no\.?\s*\d{1,2}|pehla|pahla|dusra|doosra|teesra|tisra|पहला|दूसरा|तीसरा|पहिली|दुसरी|तिसरी)/i.test(
+    question
+  );
+}
+
+function extractSelectionIndex(question) {
+  const raw = String(question || "").trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  const tokenCount = lower.split(/\s+/).filter(Boolean).length;
+
+  const exactDigit = lower.match(/^(?:option|scheme|number|no\.?)?\s*(\d{1,2})(?:st|nd|rd|th)?\s*(?:option|scheme)?$/i);
+  if (exactDigit) {
+    const n = Number(exactDigit[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 10) return n - 1;
+  }
+
+  const contextualDigit = lower.match(/\b(?:option|scheme|number|no\.?)\s*(\d{1,2})(?:st|nd|rd|th)?\b/i);
+  if (contextualDigit) {
+    const n = Number(contextualDigit[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 10) return n - 1;
+  }
+
+  const ordinals = [
+    { idx: 0, keys: ["first", "1st", "pehla", "pahla", "पहला", "पहिली"] },
+    { idx: 1, keys: ["second", "2nd", "dusra", "doosra", "दूसरा", "दुसरी"] },
+    { idx: 2, keys: ["third", "3rd", "teesra", "tisra", "तीसरा", "तिसरी"] },
+    { idx: 3, keys: ["fourth", "4th", "chautha", "चौथा"] },
+    { idx: 4, keys: ["fifth", "5th", "paanchwa", "पांचवा"] },
+  ];
+  for (const entry of ordinals) {
+    if (entry.keys.some((k) => lower.includes(k))) return entry.idx;
+  }
+
+  if (tokenCount <= 3) {
+    const shortDigit = lower.match(/\b(\d{1,2})\b/);
+    if (shortDigit) {
+      const n = Number(shortDigit[1]);
+      if (Number.isFinite(n) && n >= 1 && n <= 10) return n - 1;
+    }
+  }
+
+  return null;
+}
+
+function pickBySelectionIndex(candidateMatches, selectionIndex) {
+  if (!Number.isInteger(selectionIndex) || selectionIndex < 0) return null;
+  const items = normalizeMatches(candidateMatches);
+  if (!items.length || selectionIndex >= items.length) return null;
+  return items[selectionIndex];
 }
 
 function choiceSummary(matches, limit = 4) {
@@ -1089,7 +1139,9 @@ app.post("/chat", requireAuth, async (req, res) => {
     }
 
     if (intent === "selection" && previousMatches.length) {
+      const selectedByIndex = pickBySelectionIndex(previousMatches, extractSelectionIndex(canonicalQuestion));
       const selected =
+        selectedByIndex ||
         findFocusedScheme(canonicalQuestion, previousMatches) ||
         normalizeMatches(previousMatches)[0] ||
         null;
@@ -1129,7 +1181,9 @@ app.post("/chat", requireAuth, async (req, res) => {
       }
     }
 
-    const focusedFromHistory = findFocusedScheme(canonicalQuestion, previousMatches);
+    const focusedFromHistory =
+      pickBySelectionIndex(previousMatches, extractSelectionIndex(canonicalQuestion)) ||
+      findFocusedScheme(canonicalQuestion, previousMatches);
     const stickyFocusedScheme =
       focusedFromHistory ||
       (intent === "detail_request" && previousSelectedScheme ? previousSelectedScheme : null);
@@ -1243,8 +1297,10 @@ app.post("/chat", requireAuth, async (req, res) => {
       });
     }
 
-    const focusedFromCurrent = findFocusedScheme(canonicalQuestion, matches);
-    if (intent === "detail_request" && !focusedFromCurrent && !previousSelectedScheme) {
+    const focusedFromCurrent =
+      pickBySelectionIndex(matches, extractSelectionIndex(canonicalQuestion)) ||
+      findFocusedScheme(canonicalQuestion, matches);
+    if ((intent === "detail_request" || intent === "selection") && !focusedFromCurrent && !previousSelectedScheme) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "scheme name for details";
       return respond({
@@ -1265,7 +1321,7 @@ app.post("/chat", requireAuth, async (req, res) => {
       });
     }
 
-    if (intent === "detail_request" && focusedFromCurrent) {
+    if ((intent === "detail_request" || intent === "selection") && focusedFromCurrent) {
       session.selectedScheme = focusedFromCurrent;
       const focusedContext = buildFocusedContext(focusedFromCurrent);
       const answer = await generateValidatedModeAnswer({
