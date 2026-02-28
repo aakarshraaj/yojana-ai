@@ -351,6 +351,7 @@ function classifyIntent(question, session) {
     /(i asked|why|wrong|instead|you gave|you are giving|other state|another state|not.*state)/i.test(question) &&
     /(state|arunachal|maharashtra|jharkhand|rajasthan|gujarat|karnataka|punjab|haryana)/i.test(question);
   if (hasStateComplaint) return { intent: "complaint_correction", confidence: 0.95 };
+  if (isOutOfScopeText(question)) return { intent: "out_of_scope", confidence: 0.9 };
 
   if (isCompareIntent(question)) return { intent: "compare_request", confidence: 0.9 };
   if (extractSelectionIndex(question) != null) return { intent: "selection", confidence: 0.9 };
@@ -382,6 +383,7 @@ async function classifyIntentSmart(question, session) {
       "selection",
       "detail_request",
       "clarification_answer",
+      "out_of_scope",
       "new_discovery",
     ]);
 
@@ -413,6 +415,84 @@ function isLikelyGibberish(text) {
   const hasBigConsonantRun = /[bcdfghjklmnpqrstvwxyz]{6,}/.test(lettersOnly);
   const repeatedGarble = /(.)\1{4,}/.test(lettersOnly);
   return (veryLongSingle && (vowelRatio < 0.2 || hasBigConsonantRun)) || repeatedGarble;
+}
+
+function hasSchemeDomainSignal(text, profile = null) {
+  const q = String(text || "").toLowerCase();
+  const keywords = [
+    "scheme",
+    "schemes",
+    "yojana",
+    "scholarship",
+    "pension",
+    "benefit",
+    "subsidy",
+    "loan",
+    "apply",
+    "application",
+    "eligibility",
+    "document",
+    "office",
+    "helpline",
+    "government support",
+    "sarkari",
+    "madad",
+    "yojnaa",
+    "yojna",
+    "kisan",
+    "farmer",
+    "student",
+    "business",
+    "msme",
+    "startup",
+    "upsc",
+    "coaching",
+    "scheme ke bare",
+    "योजना",
+    "छात्रवृत्ति",
+    "पेंशन",
+    "लाभ",
+    "पात्रता",
+    "दस्तावेज",
+    "माहिती",
+    "शिष्यवृत्ती",
+    "पेन्शन",
+    "कागदपत्र",
+  ];
+  if (keywords.some((k) => q.includes(k))) return true;
+  if (extractState(q)) return true;
+  if (profile && hasProfileSignal(profile)) return true;
+  return false;
+}
+
+function isOutOfScopeText(text) {
+  const q = String(text || "").toLowerCase();
+  if (!q.trim()) return false;
+  if (hasSchemeDomainSignal(q)) return false;
+  if (isDisengageText(q)) return false;
+
+  const outScopeHints = [
+    "joke",
+    "funny",
+    "song",
+    "lyrics",
+    "movie",
+    "cricket score",
+    "ipl",
+    "bitcoin",
+    "stock",
+    "coding",
+    "python",
+    "javascript",
+    "relationship",
+    "girlfriend",
+    "boyfriend",
+    "weather",
+    "news",
+    "time now",
+    "translate this",
+  ];
+  return outScopeHints.some((k) => q.includes(k));
 }
 
 function discoverySignal(question, profile, session) {
@@ -821,6 +901,13 @@ async function buildPurposeGuidance(toUserLanguage) {
   );
 }
 
+async function buildOutOfScopeGuidance(toUserLanguage, profile = null) {
+  const next = profile && hasProfileSignal(profile)
+    ? "If you want, continue with your scheme search by telling the exact need (for example: scholarship, pension, business loan, farmer support)."
+    : "If you want to continue here, share your state and what support you need (scholarship, pension, business, farmer, health).";
+  return toUserLanguage(`I am designed for government scheme guidance only. ${next}`);
+}
+
 async function buildContextualGuidance(question, profile, toUserLanguage) {
   const supportType = inferSupportType(question);
   if (supportType === "exam_support") {
@@ -980,6 +1067,10 @@ app.post("/chat", requireAuth, async (req, res) => {
 
     const intentMeta = await classifyIntentSmart(canonicalQuestion, session);
     const intent = intentMeta.intent;
+    const schemeDomain = hasSchemeDomainSignal(canonicalQuestion, mergedProfile);
+    if (schemeDomain) {
+      session.offTopicCount = 0;
+    }
     const canonicalNormalized = normalizeText(canonicalQuestion);
     const isRepeatedLowSignal =
       session.lastCanonicalQuestion &&
@@ -1053,6 +1144,29 @@ app.post("/chat", requireAuth, async (req, res) => {
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await buildPendingClarifier(session, toUserLanguage),
+        matches: [],
+      });
+    }
+
+    if (intent === "out_of_scope") {
+      const offTopicCount = Number(session.offTopicCount || 0) + 1;
+      session.offTopicCount = offTopicCount;
+      session.lastAssistantAction = "out_of_scope";
+      session.pendingQuestion = null;
+      if (offTopicCount >= 2) {
+        return respond({
+          memory: mergedProfile,
+          interview: { nextQuestion: null },
+          answer: await toUserLanguage(
+            "I am only for government scheme guidance, so I will pause this thread here. If you want to continue, send your state and what support you need."
+          ),
+          matches: [],
+        });
+      }
+      return respond({
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await buildOutOfScopeGuidance(toUserLanguage, mergedProfile),
         matches: [],
       });
     }
