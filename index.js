@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const { randomUUID, createHash } = require("crypto");
 const { generateEmbedding, generateChatResponse, translateText, classifyIntentModel } = require("./lib/openai");
-const { searchSchemes } = require("./lib/supabase");
+const { searchSchemes, verifyAccessToken } = require("./lib/supabase");
 
 const requiredEnv = ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 const missingEnv = requiredEnv.filter((k) => !process.env[k]);
@@ -80,10 +80,27 @@ const CATEGORY_KEYWORDS = {
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
 const sessionMemory = new Map();
+const allowedOrigins = (
+  process.env.ALLOWED_ORIGINS ||
+  "http://localhost:3000,https://yojana-web-production.up.railway.app"
+)
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
 const app = express();
 app.set("trust proxy", true);
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("CORS blocked"));
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/", (req, res) => {
@@ -103,16 +120,42 @@ function fallbackSessionId(req) {
   return createHash("sha256").update(`${ip}|${ua}`).digest("hex").slice(0, 24);
 }
 
-function getSession(sessionIdInput, req) {
+function getSession(sessionIdInput, req, userId = null) {
   const provided = typeof sessionIdInput === "string" && sessionIdInput.trim().length > 0;
-  const sessionId =
-    provided
-      ? sessionIdInput.trim()
-      : fallbackSessionId(req) || randomUUID();
+  let sessionId;
+  if (userId) {
+    sessionId = provided ? `${userId}:${sessionIdInput.trim()}` : userId;
+  } else {
+    sessionId = provided ? sessionIdInput.trim() : fallbackSessionId(req) || randomUUID();
+  }
   const existing = sessionMemory.get(sessionId) || { profile: {}, updatedAt: Date.now() };
   existing.updatedAt = Date.now();
   sessionMemory.set(sessionId, existing);
   return { sessionId, session: existing, sessionIdProvided: provided };
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const token = authHeader.slice("Bearer ".length).trim();
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const user = await verifyAccessToken(token);
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    req.user = user;
+    return next();
+  } catch (_) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
 }
 
 function toNumber(value) {
@@ -193,6 +236,32 @@ function extractProfile(question) {
     incomeAnnual: extractIncome(question),
     landAcres: extractLandAcres(question),
   };
+}
+
+function detectBlankProfileTemplate(text) {
+  const raw = String(text || "");
+  const normalized = raw.toLowerCase();
+  const labels = ["state:", "age:", "category:", "occupation:", "family income:", "need:"];
+  const labelHits = labels.filter((l) => normalized.includes(l)).length;
+  if (labelHits < 4) return false;
+
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const labeledLines = lines.filter((l) => /^(state|age|category|occupation|family income|need)\s*:/i.test(l));
+  if (!labeledLines.length) return false;
+
+  const nonEmptyValues = labeledLines.filter((l) => {
+    const value = l.replace(/^(state|age|category|occupation|family income|need)\s*:/i, "").trim();
+    return value.length > 0;
+  });
+
+  return nonEmptyValues.length === 0;
+}
+
+function isResetCommand(text) {
+  return /(reset profile|start over|new chat|clear memory|forget details|forget profile)/i.test(String(text || ""));
 }
 
 function mergeProfile(oldProfile, newProfile) {
@@ -752,7 +821,7 @@ async function translateToMarathi(text) {
   return translateText(text, "Marathi");
 }
 
-app.post("/chat", async (req, res) => {
+app.post("/chat", requireAuth, async (req, res) => {
   try {
     cleanupSessions();
     const { question, language = "en", sessionId: sessionIdInput } = req.body;
@@ -780,7 +849,7 @@ app.post("/chat", async (req, res) => {
       canonicalQuestion = await translateToEnglish(question);
     }
 
-    const { sessionId, session, sessionIdProvided } = getSession(sessionIdInput, req);
+    const { sessionId, session, sessionIdProvided } = getSession(sessionIdInput, req, req.user?.id || null);
     const respond = (payload) =>
       res.json({
         ...payload,
@@ -792,6 +861,34 @@ app.post("/chat", async (req, res) => {
             : "Send this sessionId in the next request to preserve conversation context.",
         },
       });
+
+    if (isResetCommand(canonicalQuestion)) {
+      session.profile = {};
+      session.selectedScheme = null;
+      session.lastMatches = [];
+      session.pendingQuestion = null;
+      session.lastAssistantAction = "clarify";
+      return respond({
+        memory: session.profile,
+        interview: { nextQuestion: await toUserLanguage("Which state do you live in?") },
+        answer: await toUserLanguage("Done. I cleared saved profile and scheme context. Which state do you live in?"),
+        matches: [],
+      });
+    }
+
+    if (detectBlankProfileTemplate(question)) {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "fill state, age, category, occupation, income, and need";
+      return respond({
+        memory: session.profile || {},
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(
+          "I received a blank profile template. Please fill at least State and Need (for example: State: Maharashtra, Need: scholarship for engineering student)."
+        ),
+        matches: [],
+      });
+    }
+
     const mergedProfile = mergeProfile(session.profile || {}, extractProfile(canonicalQuestion));
     session.profile = mergedProfile;
     session.updatedAt = Date.now();
@@ -1238,5 +1335,4 @@ app.post("/chat", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Yojana AI running on port ${PORT}`);
-  console.log("Supabase host:", process.env.SUPABASE_URL);
 });
