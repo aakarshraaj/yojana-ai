@@ -1068,10 +1068,14 @@ app.post("/chat", requireAuth, async (req, res) => {
 
     const intentMeta = await classifyIntentSmart(canonicalQuestion, session);
     let intent = intentMeta.intent;
+    const inDomainByText = hasSchemeDomainSignal(canonicalQuestion, mergedProfile);
+    if (intent === "out_of_scope" && inDomainByText) {
+      intent = session.pendingQuestion ? "clarification_answer" : "new_discovery";
+    }
     if ((intent === "smalltalk_noise" || intent === "unclear_ack") && turnProfileSignal) {
       intent = session.pendingQuestion ? "clarification_answer" : "new_discovery";
     }
-    const schemeDomain = hasSchemeDomainSignal(canonicalQuestion, mergedProfile);
+    const schemeDomain = inDomainByText;
     if (schemeDomain) {
       session.offTopicCount = 0;
     }
