@@ -185,7 +185,7 @@ function extractByKeywords(text, dict) {
 }
 
 function extractIncome(text) {
-  if (/\b(no income|zero income|income is zero|without income|no earning)\b/i.test(text)) {
+  if (/\b(no income|zero income|income is zero|without income|no earning|no earnings|no money|no cash|income nil)\b/i.test(text)) {
     return 0;
   }
   const patterns = [
@@ -267,8 +267,8 @@ function isResetCommand(text) {
 function isDisengageText(text) {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
-  if (/\b(no income|zero income|without income)\b/.test(raw)) return false;
-  return /\b(no|nope|nah|not now|later|stop|cancel|leave it|drop it|skip|nothing|i don't want|i dont want|don't want|dont want|not interested|no thanks|bye)\b/.test(
+  if (/\b(no income|zero income|without income|no earning|no earnings|no money|no cash|income nil)\b/.test(raw)) return false;
+  return /\b(nope|nah|not now|later|stop|cancel|leave it|drop it|skip|nothing|i don't want|i dont want|don't want|dont want|not interested|no thanks|bye)\b/.test(
     raw
   );
 }
@@ -1051,6 +1051,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     session.updatedAt = Date.now();
     const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
     const previousSelectedScheme = session.selectedScheme || null;
+    const turnProfileSignal = hasProfileSignal(extractProfile(canonicalQuestion));
 
     if (isDisengageText(canonicalQuestion)) {
       session.lastAssistantAction = "paused";
@@ -1066,7 +1067,10 @@ app.post("/chat", requireAuth, async (req, res) => {
     }
 
     const intentMeta = await classifyIntentSmart(canonicalQuestion, session);
-    const intent = intentMeta.intent;
+    let intent = intentMeta.intent;
+    if ((intent === "smalltalk_noise" || intent === "unclear_ack") && turnProfileSignal) {
+      intent = session.pendingQuestion ? "clarification_answer" : "new_discovery";
+    }
     const schemeDomain = hasSchemeDomainSignal(canonicalQuestion, mergedProfile);
     if (schemeDomain) {
       session.offTopicCount = 0;
