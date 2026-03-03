@@ -733,16 +733,16 @@ function extractMentionedStates(raw) {
 }
 
 function scoreMatch(match, profile) {
-  const raw = JSON.stringify(match.raw_json || "");
-  const lower = raw.toLowerCase();
-  const mentionedStates = extractMentionedStates(raw);
-  const central = isCentralScheme(raw);
+  const corpus = `${String(match.name || "")} ${JSON.stringify(match.raw_json || "")}`;
+  const lower = corpus.toLowerCase();
+  const mentionedStates = extractMentionedStates(corpus);
   let ruleScore = 0;
   let hardReject = false;
 
   if (profile.state) {
     if (lower.includes(profile.state)) ruleScore += 20;
-    if (!central && mentionedStates.length > 0 && !mentionedStates.includes(profile.state)) hardReject = true;
+    // Explicitly state-tagged schemes must match requested state.
+    if (mentionedStates.length > 0 && !mentionedStates.includes(profile.state)) hardReject = true;
   }
 
   if (profile.profession && PROFESSION_KEYWORDS[profile.profession]) {
@@ -771,15 +771,15 @@ function applyStateGuardrails(matches, profile) {
 
   let droppedCount = 0;
   const filtered = normalized.filter((m) => {
-    const raw = JSON.stringify(m.raw_json || "");
-    const mentionedStates = extractMentionedStates(raw);
+    const corpus = `${String(m.name || "")} ${JSON.stringify(m.raw_json || "")}`;
+    const mentionedStates = extractMentionedStates(corpus);
     if (mentionedStates.length === 0) {
-      if (isCentralScheme(raw)) return true;
+      if (isCentralScheme(corpus)) return true;
       droppedCount += 1;
       return false;
     }
     if (mentionedStates.includes(profile.state)) return true;
-    if (isCentralScheme(raw)) return true;
+    // Never allow a scheme tagged for another specific state.
     droppedCount += 1;
     return false;
   });
