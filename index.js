@@ -48,6 +48,59 @@ const STATES = [
   "puducherry",
 ];
 
+const CITY_TO_STATE = {
+  kolkata: "west bengal",
+  howrah: "west bengal",
+  siliguri: "west bengal",
+  chennai: "tamil nadu",
+  coimbatore: "tamil nadu",
+  madurai: "tamil nadu",
+  trichy: "tamil nadu",
+  bengaluru: "karnataka",
+  bangalore: "karnataka",
+  mysuru: "karnataka",
+  mumbai: "maharashtra",
+  pune: "maharashtra",
+  nagpur: "maharashtra",
+  nashik: "maharashtra",
+  hyderabad: "telangana",
+  warangal: "telangana",
+  delhi: "delhi",
+  newdelhi: "delhi",
+  gurgaon: "haryana",
+  gurugram: "haryana",
+  faridabad: "haryana",
+  noida: "uttar pradesh",
+  ghaziabad: "uttar pradesh",
+  lucknow: "uttar pradesh",
+  kanpur: "uttar pradesh",
+  varanasi: "uttar pradesh",
+  patna: "bihar",
+  gaya: "bihar",
+  ranchi: "jharkhand",
+  jamshedpur: "jharkhand",
+  bokaro: "jharkhand",
+  guwahati: "assam",
+  dibrugarh: "assam",
+  itanagar: "arunachal pradesh",
+  tawang: "arunachal pradesh",
+  jaipur: "rajasthan",
+  jodhpur: "rajasthan",
+  udaipur: "rajasthan",
+  ahmedabad: "gujarat",
+  surat: "gujarat",
+  vadodara: "gujarat",
+  bhopal: "madhya pradesh",
+  indore: "madhya pradesh",
+  raipur: "chhattisgarh",
+  bhubaneswar: "odisha",
+  cuttack: "odisha",
+  chandigarh: "chandigarh",
+  shimla: "himachal pradesh",
+  dehradun: "uttarakhand",
+  srinagar: "jammu and kashmir",
+};
+
 const PROFESSION_KEYWORDS = {
   farmer: ["farmer", "agriculture", "kisan", "cultivator"],
   student: ["student", "school", "college"],
@@ -173,8 +226,13 @@ function unitMultiplier(unit) {
 }
 
 function extractState(text) {
-  const lower = text.toLowerCase();
-  return STATES.find((s) => lower.includes(s)) || null;
+  const lower = String(text || "").toLowerCase();
+  const explicit = STATES.find((s) => lower.includes(s));
+  if (explicit) return explicit;
+  for (const [city, state] of Object.entries(CITY_TO_STATE)) {
+    if (lower.includes(city)) return state;
+  }
+  return null;
 }
 
 function extractByKeywords(text, dict) {
@@ -544,7 +602,11 @@ function isCentralScheme(raw) {
 
 function extractMentionedStates(raw) {
   const lower = raw.toLowerCase();
-  return STATES.filter((s) => lower.includes(s));
+  const states = new Set(STATES.filter((s) => lower.includes(s)));
+  for (const [city, state] of Object.entries(CITY_TO_STATE)) {
+    if (lower.includes(city)) states.add(state);
+  }
+  return [...states];
 }
 
 function scoreMatch(match, profile) {
@@ -588,7 +650,11 @@ function applyStateGuardrails(matches, profile) {
   const filtered = normalized.filter((m) => {
     const raw = JSON.stringify(m.raw_json || "");
     const mentionedStates = extractMentionedStates(raw);
-    if (mentionedStates.length === 0) return true;
+    if (mentionedStates.length === 0) {
+      if (isCentralScheme(raw)) return true;
+      droppedCount += 1;
+      return false;
+    }
     if (mentionedStates.includes(profile.state)) return true;
     if (isCentralScheme(raw)) return true;
     droppedCount += 1;
@@ -596,7 +662,7 @@ function applyStateGuardrails(matches, profile) {
   });
 
   return {
-    matches: filtered.length > 0 ? filtered : normalized,
+    matches: filtered,
     droppedCount,
     mismatchDetected: droppedCount > 0,
   };
@@ -1047,12 +1113,20 @@ app.post("/chat", requireAuth, async (req, res) => {
       });
     }
 
-    const mergedProfile = mergeProfile(session.profile || {}, extractProfile(canonicalQuestion));
+    const extractedThisTurn = extractProfile(canonicalQuestion);
+    const previousProfile = session.profile || {};
+    const stateChangedThisTurn =
+      !!extractedThisTurn.state && !!previousProfile.state && extractedThisTurn.state !== previousProfile.state;
+    if (stateChangedThisTurn) {
+      session.selectedScheme = null;
+      session.lastMatches = [];
+    }
+    const mergedProfile = mergeProfile(previousProfile, extractedThisTurn);
     session.profile = mergedProfile;
     session.updatedAt = Date.now();
     const previousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
     const previousSelectedScheme = session.selectedScheme || null;
-    const turnProfileSignal = hasProfileSignal(extractProfile(canonicalQuestion));
+    const turnProfileSignal = hasProfileSignal(extractedThisTurn);
 
     if (isDisengageText(canonicalQuestion)) {
       session.lastAssistantAction = "paused";
@@ -1176,6 +1250,20 @@ app.post("/chat", requireAuth, async (req, res) => {
         memory: mergedProfile,
         interview: { nextQuestion: null },
         answer: await buildOutOfScopeGuidance(toUserLanguage, mergedProfile),
+        matches: [],
+      });
+    }
+
+    const retrievalIntent = new Set(["new_discovery", "compare_request", "selection", "detail_request", "complaint_correction"]);
+    if (retrievalIntent.has(intent) && !mergedProfile.state) {
+      session.lastAssistantAction = "clarify";
+      session.pendingQuestion = "which state do you live in";
+      return respond({
+        memory: mergedProfile,
+        interview: { nextQuestion: await toUserLanguage("Which state do you live in?") },
+        answer: await toUserLanguage(
+          "Please tell me your state first (or city name). I only show schemes after state is identified."
+        ),
         matches: [],
       });
     }
@@ -1444,12 +1532,13 @@ app.post("/chat", requireAuth, async (req, res) => {
       }
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = nextQuestion || null;
+      const noResultMessage = mergedProfile.state
+        ? `No schemes found for your current profile in ${mergedProfile.state}. Please refine category/income/need, or try a broader need.`
+        : nextQuestion || "I could not find relevant schemes right now. Please try another wording or share more details.";
       return respond({
         memory: mergedProfile,
         interview: { nextQuestion: localizedNextQuestion },
-        answer: await toUserLanguage(
-          nextQuestion || "I could not find relevant schemes right now. Please try another wording or share more details."
-        ),
+        answer: await toUserLanguage(noResultMessage),
         matches: [],
       });
     }
