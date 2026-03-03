@@ -166,6 +166,9 @@ app.get("/", (req, res) => {
   res.json({ status: "yojana-ai running" });
 });
 
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 1000 * 60 * 60 * 24);
+const sessionStore = new Map();
+
 const PARSE_INTENTS = new Set(["RECOMMEND", "DETAILS", "COMPARE", "UPDATE_PROFILE", "UNKNOWN"]);
 
 function extractCity(text) {
@@ -289,7 +292,22 @@ function getSession(sessionIdInput, userId = null) {
   } else {
     sessionId = provided ? sessionIdInput.trim() : randomUUID();
   }
-  const session = { profile: {}, updatedAt: Date.now() };
+  const now = Date.now();
+  const existing = sessionStore.get(sessionId);
+  if (existing && now - Number(existing.updatedAt || 0) <= SESSION_TTL_MS) {
+    existing.updatedAt = now;
+    return { sessionId, session: existing, sessionIdProvided: provided };
+  }
+
+  const session = { profile: {}, updatedAt: now };
+  sessionStore.set(sessionId, session);
+
+  // Opportunistic cleanup to prevent unbounded growth.
+  if (sessionStore.size > 5000) {
+    for (const [key, value] of sessionStore.entries()) {
+      if (now - Number(value?.updatedAt || 0) > SESSION_TTL_MS) sessionStore.delete(key);
+    }
+  }
   return { sessionId, session, sessionIdProvided: provided };
 }
 
@@ -1010,6 +1028,20 @@ function validateGeneratedAnswer(answer, mode, intent) {
   return true;
 }
 
+function sanitizeAnswerWithMatches(answer, matches = []) {
+  const text = String(answer || "").trim();
+  if (!text) return text;
+  if (!Array.isArray(matches) || matches.length === 0) return text;
+
+  const cleaned = text
+    .split(/\r?\n/)
+    .filter((line) => !/^no schemes found\b/i.test(line.trim()))
+    .join("\n")
+    .trim();
+
+  return cleaned || text;
+}
+
 async function generateValidatedModeAnswer({
   question,
   context,
@@ -1247,6 +1279,12 @@ app.post("/chat", requireAuth, async (req, res) => {
 
     const intentMeta = await classifyIntentSmart(canonicalQuestion, session);
     let intent = intentMeta.intent;
+    const hasSelectionFromHistory =
+      previousMatches.length > 0 &&
+      (extractSelectionIndex(canonicalQuestion) != null || !!findFocusedScheme(canonicalQuestion, previousMatches));
+    if (hasSelectionFromHistory) {
+      intent = "selection";
+    }
     const inDomainByText = hasSchemeDomainSignal(canonicalQuestion, mergedProfile);
     if (intent === "out_of_scope" && inDomainByText) {
       intent = session.pendingQuestion ? "clarification_answer" : "new_discovery";
@@ -1425,7 +1463,7 @@ app.post("/chat", requireAuth, async (req, res) => {
       return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer: await toUserLanguage(answer),
+        answer: await toUserLanguage(sanitizeAnswerWithMatches(answer, matches)),
         quality: { stateMismatchDetected: guarded.mismatchDetected, droppedForState: guarded.droppedCount },
         matches: matches.map((m) => ({
           slug: m.slug || null,
@@ -1719,7 +1757,7 @@ app.post("/chat", requireAuth, async (req, res) => {
     return respond({
       memory: mergedProfile,
       interview: { nextQuestion: localizedNextQuestion },
-      answer: localizedAnswer,
+      answer: sanitizeAnswerWithMatches(localizedAnswer, matches),
       quality: { stateMismatchDetected: guarded.mismatchDetected, droppedForState: guarded.droppedCount },
       matches: matches.map((m) => ({
         slug: m.slug || null,
