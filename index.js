@@ -849,6 +849,15 @@ function extractSelectionIndex(question) {
     if (Number.isFinite(n) && n >= 1 && n <= 10) return n - 1;
   }
 
+  // Natural language references: "tell me about 2", "details for 2nd", "show 3rd scheme"
+  const embeddedDigit = lower.match(
+    /\b(?:about|detail(?:s)?(?:\s+for)?|for|show|explain|describe|tell\s+me\s+about|give(?:\s+me)?(?:\s+details)?(?:\s+for)?)\s+(\d{1,2})(?:st|nd|rd|th)?\b/i
+  );
+  if (embeddedDigit) {
+    const n = Number(embeddedDigit[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 10) return n - 1;
+  }
+
   const ordinals = [
     { idx: 0, keys: ["first", "1st", "pehla", "pahla", "पहला", "पहिली"] },
     { idx: 1, keys: ["second", "2nd", "dusra", "doosra", "दूसरा", "दुसरी"] },
@@ -858,6 +867,30 @@ function extractSelectionIndex(question) {
   ];
   for (const entry of ordinals) {
     if (entry.keys.some((k) => lower.includes(k))) return entry.idx;
+  }
+
+  // Ordinal in phrase: "about second", "details for third"
+  const phraseOrdinals = new Map([
+    ["first", 0],
+    ["1st", 0],
+    ["second", 1],
+    ["2nd", 1],
+    ["third", 2],
+    ["3rd", 2],
+    ["fourth", 3],
+    ["4th", 3],
+    ["fifth", 4],
+    ["5th", 4],
+  ]);
+  for (const [word, idx] of phraseOrdinals.entries()) {
+    if (
+      new RegExp(
+        `\\b(?:about|detail(?:s)?(?:\\s+for)?|for|show|explain|describe|tell\\s+me\\s+about|give(?:\\s+me)?(?:\\s+details)?(?:\\s+for)?)\\s+${word}\\b`,
+        "i"
+      ).test(lower)
+    ) {
+      return idx;
+    }
   }
 
   if (tokenCount <= 3) {
