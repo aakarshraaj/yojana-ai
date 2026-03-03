@@ -88,6 +88,7 @@ const allowedOrigins = (
   .map((o) => o.trim())
   .filter(Boolean);
 
+
 const app = express();
 app.set("trust proxy", true);
 app.use(
@@ -1540,6 +1541,7 @@ app.post("/chat", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("FULL ERROR DUMP:");
     console.error(err?.stack || err);
+
     return res.status(500).json({ error: "Internal server error" });
   }
 });
