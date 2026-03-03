@@ -1,8 +1,15 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const { randomUUID, createHash } = require("crypto");
-const { generateEmbedding, generateChatResponse, translateText, classifyIntentModel } = require("./lib/openai");
+const { randomUUID } = require("crypto");
+const {
+  generateEmbedding,
+  generateChatResponse,
+  translateText,
+  classifyIntentModel,
+  parseStructuredInput,
+  formatStructuredOutput,
+} = require("./lib/openai");
 const { searchSchemes, verifyAccessToken } = require("./lib/supabase");
 
 const requiredEnv = ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
@@ -131,8 +138,6 @@ const CATEGORY_KEYWORDS = {
   general: ["general category", "open category"],
 };
 
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24;
-const sessionMemory = new Map();
 const allowedOrigins = (
   process.env.ALLOWED_ORIGINS ||
   "http://localhost:3000,https://yojana-web-production.up.railway.app"
@@ -161,31 +166,131 @@ app.get("/", (req, res) => {
   res.json({ status: "yojana-ai running" });
 });
 
-function cleanupSessions() {
-  const now = Date.now();
-  for (const [sessionId, data] of sessionMemory.entries()) {
-    if (now - data.updatedAt > SESSION_TTL_MS) sessionMemory.delete(sessionId);
+const PARSE_INTENTS = new Set(["RECOMMEND", "DETAILS", "COMPARE", "UPDATE_PROFILE", "UNKNOWN"]);
+
+function extractCity(text) {
+  const lower = String(text || "").toLowerCase();
+  for (const city of Object.keys(CITY_TO_STATE)) {
+    if (lower.includes(city)) return city;
   }
+  return null;
 }
 
-function fallbackSessionId(req) {
-  const ip = req.headers["x-forwarded-for"] || req.ip || "unknown-ip";
-  const ua = req.headers["user-agent"] || "unknown-ua";
-  return createHash("sha256").update(`${ip}|${ua}`).digest("hex").slice(0, 24);
+function fallbackParse(message) {
+  const text = String(message || "");
+  const lower = text.toLowerCase();
+  const extracted = extractProfile(text);
+  const city = extractCity(text);
+
+  let intent = "UNKNOWN";
+  if (/\b(compare|comparison|vs|versus|difference)\b/i.test(text)) {
+    intent = "COMPARE";
+  } else if (/\b(both|details?|detail|eligibility|documents?|apply|how to apply|scheme|yojana)\b/i.test(text)) {
+    intent = /\bboth\b/i.test(text) ? "DETAILS" : "RECOMMEND";
+  } else if (hasProfileSignal(extracted) || city) {
+    intent = "UPDATE_PROFILE";
+  }
+
+  let selectionCategory = null;
+  if (/\btribe|tribal|\bst\b|scheduled tribe\b/i.test(text)) selectionCategory = "ST";
+  else if (/\bsc\b|scheduled caste\b/i.test(text)) selectionCategory = "SC";
+  else if (/\bobc\b|other backward class\b|backward class\b/i.test(text)) selectionCategory = "OBC";
+  else if (/\bews\b|economically weaker\b/i.test(text)) selectionCategory = "EWS";
+  else if (/\bminority\b/i.test(text)) selectionCategory = "MINORITY";
+  else if (/\bgeneral\b|open category\b/i.test(text)) selectionCategory = "GENERAL";
+
+  let quantity = null;
+  if (/\b(both|all|multiple|many)\b/i.test(text)) quantity = "MULTIPLE";
+  else if (/\b(one|single|any one|either)\b/i.test(text)) quantity = "SINGLE";
+
+  let level = null;
+  if (/\bcentral\b/i.test(text)) level = "CENTRAL";
+  else if (/\bstate\b/i.test(text)) level = "STATE";
+
+  return {
+    intent,
+    profile_updates: {
+      state: extracted.state || null,
+      city,
+      age: extracted.age ?? null,
+      category: extracted.category ? String(extracted.category).toUpperCase() : null,
+      occupation: extracted.profession || null,
+      income: extracted.incomeAnnual ?? null,
+      need: null,
+    },
+    selection_filters: {
+      category: selectionCategory,
+      level,
+      quantity,
+    },
+    confidence: 0.55,
+  };
 }
 
-function getSession(sessionIdInput, req, userId = null) {
+function normalizeParseResponse(raw = {}) {
+  const safe = raw && typeof raw === "object" ? raw : {};
+  const profile = safe.profile_updates && typeof safe.profile_updates === "object" ? safe.profile_updates : {};
+  const filters = safe.selection_filters && typeof safe.selection_filters === "object" ? safe.selection_filters : {};
+  const normalizedIntent = PARSE_INTENTS.has(safe.intent) ? safe.intent : "UNKNOWN";
+  const confidenceRaw = Number(safe.confidence);
+  const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0;
+
+  return {
+    intent: normalizedIntent,
+    profile_updates: {
+      state: profile.state ?? null,
+      city: profile.city ?? null,
+      age: profile.age ?? null,
+      category: profile.category ?? null,
+      occupation: profile.occupation ?? null,
+      income: profile.income ?? null,
+      need: profile.need ?? null,
+    },
+    selection_filters: {
+      category: filters.category ?? null,
+      level: filters.level ?? null,
+      quantity: filters.quantity ?? null,
+    },
+    confidence,
+  };
+}
+
+app.post("/parse", async (req, res) => {
+  const { message, context = {} } = req.body || {};
+  if (typeof message !== "string" || message.trim().length === 0) {
+    return res.status(400).json({ error: "message is required" });
+  }
+
+  try {
+    const parsed = await parseStructuredInput(message, context);
+    return res.json(normalizeParseResponse(parsed));
+  } catch (err) {
+    console.error("PARSE ERROR:", err?.stack || err);
+    return res.json(normalizeParseResponse(fallbackParse(message)));
+  }
+});
+
+app.post("/format", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const answer = await formatStructuredOutput(payload);
+    return res.json({ answer: String(answer || "").trim() || "No schemes found for this profile." });
+  } catch (err) {
+    console.error("FORMAT ERROR:", err?.stack || err);
+    return res.json({ answer: "No schemes found for this profile." });
+  }
+});
+
+function getSession(sessionIdInput, userId = null) {
   const provided = typeof sessionIdInput === "string" && sessionIdInput.trim().length > 0;
   let sessionId;
   if (userId) {
     sessionId = provided ? `${userId}:${sessionIdInput.trim()}` : userId;
   } else {
-    sessionId = provided ? sessionIdInput.trim() : fallbackSessionId(req) || randomUUID();
+    sessionId = provided ? sessionIdInput.trim() : randomUUID();
   }
-  const existing = sessionMemory.get(sessionId) || { profile: {}, updatedAt: Date.now() };
-  existing.updatedAt = Date.now();
-  sessionMemory.set(sessionId, existing);
-  return { sessionId, session: existing, sessionIdProvided: provided };
+  const session = { profile: {}, updatedAt: Date.now() };
+  return { sessionId, session, sessionIdProvided: provided };
 }
 
 async function requireAuth(req, res, next) {
@@ -1047,7 +1152,6 @@ async function translateToMarathi(text) {
 
 app.post("/chat", requireAuth, async (req, res) => {
   try {
-    cleanupSessions();
     const { question, language = "en", sessionId: sessionIdInput } = req.body;
     const normalizedLanguageInput = String(language || "en").toLowerCase();
     const normalizedLanguage =
@@ -1073,7 +1177,7 @@ app.post("/chat", requireAuth, async (req, res) => {
       canonicalQuestion = await translateToEnglish(question);
     }
 
-    const { sessionId, session, sessionIdProvided } = getSession(sessionIdInput, req, req.user?.id || null);
+    const { sessionId, session, sessionIdProvided } = getSession(sessionIdInput, req.user?.id || null);
     const respond = (payload) =>
       res.json({
         ...payload,
