@@ -16,6 +16,39 @@ const {
 } = require("../../../services/scheme");
 const { mapMatchBasic, mapMatchScored } = require("../mappers");
 
+function titleCase(value) {
+  return String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function addTransparentListIntro(answer, profile, quality = {}) {
+  const base = String(answer || "").trim();
+  if (!base) return base;
+  const lowerHead = base.slice(0, 240).toLowerCase();
+  if (lowerHead.includes("based on what you shared") || lowerHead.includes("i searched")) return base;
+
+  const profileBits = [];
+  if (profile?.profession) profileBits.push(`profession: ${profile.profession}`);
+  if (profile?.state) profileBits.push(`state: ${titleCase(profile.state)}`);
+  if (profile?.district) profileBits.push(`district: ${titleCase(profile.district)}`);
+  if (profile?.category) profileBits.push(`category: ${String(profile.category).toUpperCase()}`);
+  const profileSummary = profileBits.length ? profileBits.join(", ") : "your latest profile details";
+
+  const introLines = [
+    `Based on what you shared (${profileSummary}), I searched the available scheme records and shortlisted the most relevant options.`,
+  ];
+  if (quality?.stateMismatchDetected && Number(quality?.droppedForState) > 0) {
+    introLines.push(
+      `I also excluded ${quality.droppedForState} result${quality.droppedForState === 1 ? "" : "s"} that were tagged for other states.`
+    );
+  }
+
+  return `${introLines.join(" ")}\n\n${base}`;
+}
+
 async function handleDiscoveryAndDetails({
   intent,
   session,
@@ -130,7 +163,11 @@ async function handleDiscoveryAndDetails({
   return respond({
     memory: mergedProfile,
     interview: { nextQuestion: localizedNextQuestion },
-    answer: sanitizeAnswerWithMatches(localizedAnswer, matches),
+    answer: addTransparentListIntro(
+      sanitizeAnswerWithMatches(localizedAnswer, matches),
+      mergedProfile,
+      { stateMismatchDetected: guarded.mismatchDetected, droppedForState: guarded.droppedCount }
+    ),
     quality: { stateMismatchDetected: guarded.mismatchDetected, droppedForState: guarded.droppedCount },
     matches: matches.map(mapMatchScored),
   });

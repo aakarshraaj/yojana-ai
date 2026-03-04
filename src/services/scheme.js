@@ -204,13 +204,27 @@ function buildContext(matches) {
 
 function buildDeterministicList(matches, profileState = null) {
   const lines = [];
-  if (profileState) lines.push(`Here are corrected options for ${profileState}:`);
-  else lines.push("Here are relevant schemes:");
+  if (profileState) {
+    const stateTitle = profileState
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+    lines.push(
+      `Based on what you shared, I searched the available scheme records for **${stateTitle}** and shortlisted these options:`
+    );
+  } else {
+    lines.push("Based on what you shared, I searched the available scheme records and shortlisted these options:");
+  }
   lines.push("");
 
   matches.slice(0, 4).forEach((m, i) => {
-    lines.push(`${i + 1}. ${m.name} (Eligibility Probability: ${m.eligibilityProbability}%)`);
+    lines.push(`### ${i + 1}. ${m.name}`);
+    lines.push(`- **Eligibility Probability:** ${m.eligibilityProbability}%`);
+    lines.push("");
   });
+
+  lines.push('You can reply with `tell me about 1` (or 2/3/4) for full details.');
 
   return lines.join("\n");
 }

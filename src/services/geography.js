@@ -6,9 +6,13 @@ class GeographyService {
       expiresAt: 0,
       states: [],
       statesByName: new Map(),
+      districts: [],
+      districtsByName: new Map(),
+      districtNamesSorted: [],
       cities: [],
       citiesBySearch: new Map(),
       cityNamesSorted: [],
+      citiesAvailable: true,
     };
   }
 
@@ -20,14 +24,27 @@ class GeographyService {
       .trim();
   }
 
+  escapeRegex(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  containsNormalized(text, term) {
+    const normalizedText = this.normalize(text);
+    const normalizedTerm = this.normalize(term);
+    if (!normalizedText || !normalizedTerm) return false;
+    const termPattern = this.escapeRegex(normalizedTerm).replace(/\s+/g, "\\s+");
+    return new RegExp(`(?:^|\\b)${termPattern}(?:\\b|$)`, "i").test(normalizedText);
+  }
+
   async refreshCache(force = false) {
     const now = Date.now();
-    if (!force && now < this.cache.expiresAt && this.cache.states.length && this.cache.cities.length) {
+    if (!force && now < this.cache.expiresAt && this.cache.states.length && (this.cache.cities.length || this.cache.districts.length)) {
       return;
     }
 
-    const [statesRes, citiesRes] = await Promise.all([
+    const [statesRes, districtsRes, citiesRes] = await Promise.all([
       this.db.from("states").select("id, name, code").order("name", { ascending: true }),
+      this.db.from("districts").select("id, name, state_id, states(id, name, code)").order("name", { ascending: true }),
       this.db
         .from("cities")
         .select("name, search_name, district_id, state_id, districts(name, state_id, states(id, name, code))"),
@@ -36,12 +53,24 @@ class GeographyService {
     if (statesRes.error) {
       throw new Error(`Failed to load states: ${statesRes.error.message}`);
     }
-    if (citiesRes.error) {
-      throw new Error(`Failed to load cities: ${citiesRes.error.message}`);
+    if (districtsRes.error) {
+      throw new Error(`Failed to load districts: ${districtsRes.error.message}`);
     }
 
     const statesData = Array.isArray(statesRes.data) ? statesRes.data : [];
-    const citiesData = Array.isArray(citiesRes.data) ? citiesRes.data : [];
+    const districtsData = Array.isArray(districtsRes.data) ? districtsRes.data : [];
+    let citiesData = [];
+    let citiesAvailable = true;
+    if (citiesRes.error) {
+      const msg = String(citiesRes.error?.message || "");
+      const citiesMissing = /could not find the table .*cities/i.test(msg);
+      if (!citiesMissing) {
+        throw new Error(`Failed to load cities: ${citiesRes.error.message}`);
+      }
+      citiesAvailable = false;
+    } else {
+      citiesData = Array.isArray(citiesRes.data) ? citiesRes.data : [];
+    }
 
     const states = statesData.map((row) => ({
       id: row.id,
@@ -50,6 +79,20 @@ class GeographyService {
     }));
 
     const statesByName = new Map(states.map((s) => [s.name, s]));
+
+    const districts = districtsData.map((row) => ({
+      id: row.id,
+      district: this.normalize(row?.name || ""),
+      state: row?.states?.name ? this.normalize(row.states.name) : null,
+      stateCode: row?.states?.code || null,
+    }));
+    const districtsByName = new Map();
+    for (const d of districts) {
+      if (d.district && !districtsByName.has(d.district)) {
+        districtsByName.set(d.district, d);
+      }
+    }
+    const districtNamesSorted = [...new Set(districts.map((d) => d.district).filter(Boolean))].sort((a, b) => b.length - a.length);
 
     const cities = citiesData.map((row) => {
       const districtName = row?.districts?.name ? this.normalize(row.districts.name) : null;
@@ -88,9 +131,13 @@ class GeographyService {
       expiresAt: now + this.cacheTtlMs,
       states,
       statesByName,
+      districts,
+      districtsByName,
+      districtNamesSorted,
       cities,
       citiesBySearch,
       cityNamesSorted,
+      citiesAvailable,
     };
   }
 
@@ -110,8 +157,8 @@ class GeographyService {
     const normalized = this.normalize(stateName);
     if (!normalized) return [];
     const districts = new Set();
-    for (const city of this.cache.cities) {
-      if (city.state === normalized && city.district) districts.add(city.district);
+    for (const district of this.cache.districts) {
+      if (district.state === normalized && district.district) districts.add(district.district);
     }
     return [...districts].sort();
   }
@@ -120,7 +167,7 @@ class GeographyService {
     const lower = this.normalize(text);
     if (!lower) return null;
     for (const cityName of this.cache.cityNamesSorted) {
-      if (lower.includes(cityName)) {
+      if (this.containsNormalized(lower, cityName)) {
         return this.cache.citiesBySearch.get(cityName) || null;
       }
     }
@@ -131,7 +178,18 @@ class GeographyService {
     const lower = this.normalize(text);
     if (!lower) return null;
     for (const state of this.cache.states) {
-      if (lower.includes(state.name)) return state;
+      if (this.containsNormalized(lower, state.name)) return state;
+    }
+    return null;
+  }
+
+  findDistrictInText(text) {
+    const lower = this.normalize(text);
+    if (!lower) return null;
+    for (const districtName of this.cache.districtNamesSorted) {
+      if (this.containsNormalized(lower, districtName)) {
+        return this.cache.districtsByName.get(districtName) || null;
+      }
     }
     return null;
   }
@@ -142,23 +200,50 @@ class GeographyService {
     if (!normalized) return null;
     const cached = this.cache.citiesBySearch.get(normalized);
     if (cached) return { ...cached };
+    const districtCached = this.cache.districtsByName.get(normalized);
+    if (districtCached) {
+      return {
+        city: null,
+        district: districtCached.district || null,
+        state: districtCached.state || null,
+        stateCode: districtCached.stateCode || null,
+        searchName: districtCached.district || null,
+      };
+    }
 
     const pattern = `%${normalized}%`;
-    const { data } = await this.db
-      .from("cities")
-      .select("name, search_name, district_id, state_id, districts(name, state_id, states(id, name, code))")
-      .or(`search_name.ilike.${pattern},name.ilike.${pattern}`)
+    if (this.cache.citiesAvailable) {
+      const { data } = await this.db
+        .from("cities")
+        .select("name, search_name, district_id, state_id, districts(name, state_id, states(id, name, code))")
+        .or(`search_name.ilike.${pattern},name.ilike.${pattern}`)
+        .limit(1)
+        .maybeSingle();
+
+      if (data) {
+        return {
+          city: this.normalize(data.name || data.search_name || normalized),
+          district: data?.districts?.name ? this.normalize(data.districts.name) : null,
+          state: data?.districts?.states?.name ? this.normalize(data.districts.states.name) : null,
+          stateCode: data?.districts?.states?.code || null,
+          searchName: this.normalize(data.search_name || data.name || normalized),
+        };
+      }
+    }
+
+    const { data: districtData } = await this.db
+      .from("districts")
+      .select("name, state_id, states(id, name, code)")
+      .ilike("name", pattern)
       .limit(1)
       .maybeSingle();
-
-    if (!data) return null;
-
+    if (!districtData) return null;
     return {
-      city: this.normalize(data.name || data.search_name || normalized),
-      district: data?.districts?.name ? this.normalize(data.districts.name) : null,
-      state: data?.districts?.states?.name ? this.normalize(data.districts.states.name) : null,
-      stateCode: data?.districts?.states?.code || null,
-      searchName: this.normalize(data.search_name || data.name || normalized),
+      city: null,
+      district: this.normalize(districtData.name || normalized),
+      state: districtData?.states?.name ? this.normalize(districtData.states.name) : null,
+      stateCode: districtData?.states?.code || null,
+      searchName: this.normalize(districtData.name || normalized),
     };
   }
 
@@ -194,6 +279,16 @@ class GeographyService {
       };
     }
 
+    const districtHit = this.findDistrictInText(text);
+    if (districtHit) {
+      return {
+        city: null,
+        district: districtHit.district || null,
+        state: districtHit.state || null,
+        stateCode: districtHit.stateCode || null,
+      };
+    }
+
     return {
       city: null,
       district: null,
@@ -209,12 +304,18 @@ class GeographyService {
 
     const states = new Set();
     for (const state of this.cache.states) {
-      if (lower.includes(state.name)) states.add(state.name);
+      if (this.containsNormalized(lower, state.name)) states.add(state.name);
     }
 
     for (const cityName of this.cache.cityNamesSorted) {
-      if (!lower.includes(cityName)) continue;
+      if (!this.containsNormalized(lower, cityName)) continue;
       const location = this.cache.citiesBySearch.get(cityName);
+      if (location?.state) states.add(location.state);
+    }
+
+    for (const districtName of this.cache.districtNamesSorted) {
+      if (!this.containsNormalized(lower, districtName)) continue;
+      const location = this.cache.districtsByName.get(districtName);
       if (location?.state) states.add(location.state);
     }
 
