@@ -1,5 +1,17 @@
 const { PROFESSION_KEYWORDS, CATEGORY_KEYWORDS } = require("../config/geography");
 
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function toNumber(value) {
   const n = Number(String(value || "").replace(/,/g, ""));
   return Number.isFinite(n) ? n : null;
@@ -14,9 +26,18 @@ function unitMultiplier(unit) {
 }
 
 function extractByKeywords(text, dict) {
-  const lower = String(text || "").toLowerCase();
+  const lower = normalizeText(text);
   for (const [key, keywords] of Object.entries(dict)) {
-    if (keywords.some((kw) => lower.includes(kw))) return key;
+    for (const kw of keywords) {
+      const needle = normalizeText(kw);
+      if (!needle) continue;
+      // Keep short tokens strict so "st" doesn't match "student".
+      if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
+        if (new RegExp(`\\b${escapeRegex(needle)}\\b`, "i").test(lower)) return key;
+        continue;
+      }
+      if (lower.includes(needle)) return key;
+    }
   }
   return null;
 }
