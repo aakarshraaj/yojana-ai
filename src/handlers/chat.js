@@ -234,9 +234,24 @@ function createChatHandler({ getSession, runWithRetry, profileService, geography
         runWithRetry,
       });
       let intent = intentMeta.intent;
+      const hasExplicitSelection = extractSelectionIndex(canonicalQuestion) != null;
+      // Fresh discovery: full profile+need with no explicit selection (e.g. "student in Kolhapur, UPSC").
+      // Clear stale selection so we show a list, not auto-focused details from a prior failed/refresh session.
+      const isFreshDiscovery =
+        intent === "new_discovery" &&
+        mergedProfile.state &&
+        !hasExplicitSelection &&
+        (/(scheme|yojana|benefit|scholarship|upsc|exam|coaching|loan|support|help)/i.test(canonicalQuestion) ||
+          turnProfileSignal);
+      if (isFreshDiscovery) {
+        session.selectedScheme = null;
+        session.lastMatches = [];
+      }
+      const effectivePreviousMatches = Array.isArray(session.lastMatches) ? session.lastMatches : [];
+      const effectivePreviousSelectedScheme = session.selectedScheme ?? null;
       const hasSelectionFromHistory =
-        previousMatches.length > 0 &&
-        (extractSelectionIndex(canonicalQuestion) != null || !!findFocusedScheme(canonicalQuestion, previousMatches));
+        effectivePreviousMatches.length > 0 &&
+        (hasExplicitSelection || !!findFocusedScheme(canonicalQuestion, effectivePreviousMatches));
       if (hasSelectionFromHistory) intent = "selection";
 
       const inDomainByText = await hasSchemeDomainSignal(canonicalQuestion, mergedProfile, { geographyService });
@@ -332,8 +347,8 @@ function createChatHandler({ getSession, runWithRetry, profileService, geography
         session,
         canonicalQuestion,
         mergedProfile,
-        previousMatches,
-        previousSelectedScheme,
+        previousMatches: effectivePreviousMatches,
+        previousSelectedScheme: effectivePreviousSelectedScheme,
         toUserLanguage,
         respond,
         runWithRetry,
