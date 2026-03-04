@@ -2,6 +2,7 @@ const { generateEmbedding } = require("../../../../lib/openai");
 const { searchSchemes } = require("../../../../lib/supabase");
 const { TIMEOUT_EMBED_MS, TIMEOUT_SEARCH_MS } = require("../../../config/constants");
 const { profileText, getNextQuestion } = require("../../../services/profile");
+const { buildEmpatheticSchemePicker } = require("../../../services/guidance");
 const {
   normalizeMatches,
   extractSelectionIndex,
@@ -39,7 +40,7 @@ function addTransparentListIntro(answer, profile, quality = {}) {
   const profileSummary = profileBits.length ? profileBits.join(", ") : "your latest profile details";
 
   const introLines = [
-    `Based on what you shared (${profileSummary}), I searched the available scheme records and shortlisted the most relevant options.`,
+    `Based on what you shared (${profileSummary}), I searched and found these schemes that may help you.`,
   ];
   if (quality?.stateMismatchDetected && Number(quality?.droppedForState) > 0) {
     introLines.push(
@@ -86,12 +87,15 @@ async function handleDiscoveryAndDetails({
     if (intent === "detail_request" && previousMatches.length) {
       session.lastAssistantAction = "clarify";
       session.pendingQuestion = "which scheme do you mean";
+      const pickerMsg = buildEmpatheticSchemePicker(
+        mergedProfile,
+        canonicalQuestion,
+        choiceSummary(previousMatches)
+      );
       return respond({
         memory: mergedProfile,
         interview: { nextQuestion: null },
-        answer: await toUserLanguage(
-          `I can help with that, but please tell me which scheme you mean.\n\nRecent options:\n${choiceSummary(previousMatches)}`
-        ),
+        answer: await toUserLanguage(pickerMsg),
         matches: normalizeMatches(previousMatches).slice(0, 4).map(mapMatchBasic),
       });
     }
@@ -115,12 +119,11 @@ async function handleDiscoveryAndDetails({
   if ((intent === "detail_request" || intent === "selection") && !focusedFromCurrent && !previousSelectedScheme) {
     session.lastAssistantAction = "clarify";
     session.pendingQuestion = "scheme name for details";
+    const pickerMsg = buildEmpatheticSchemePicker(mergedProfile, canonicalQuestion, choiceSummary(matches));
     return respond({
       memory: mergedProfile,
       interview: { nextQuestion: null },
-      answer: await toUserLanguage(
-        `Please tell me the exact scheme name you want details for.\n\nTop options:\n${choiceSummary(matches)}`
-      ),
+      answer: await toUserLanguage(pickerMsg),
       matches: matches.slice(0, 4).map(mapMatchScored),
     });
   }

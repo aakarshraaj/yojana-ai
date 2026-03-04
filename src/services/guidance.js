@@ -1,6 +1,46 @@
 const { hasProfileSignal, getNextQuestion } = require("./profile");
 const { inferSupportType } = require("./intent");
 
+function titleCase(s) {
+  return String(s || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+    .join(" ");
+}
+
+/**
+ * Build an empathetic "which scheme" message that acknowledges the user,
+ * shows transparency, and connects to what they said.
+ */
+function buildEmpatheticSchemePicker(profile, question, choiceSummaryText) {
+  const parts = [];
+  const location = profile.city
+    ? `${titleCase(profile.city)}${profile.district ? `, ${titleCase(profile.district)}` : ""}`
+    : profile.district
+      ? titleCase(profile.district)
+      : profile.state
+        ? titleCase(profile.state)
+        : null;
+
+  // Acknowledge what they shared
+  if (profile.category === "pwd" || /\b(disab|divyang|viklang|pwd)\b/i.test(question || "")) {
+    parts.push("I understand you need support as a person with disability.");
+  } else if (profile.profession) {
+    parts.push(`I see you're a ${profile.profession}${location ? ` in ${location}` : ""}.`);
+  } else if (location) {
+    parts.push(`I see you're from ${location}.`);
+  } else {
+    parts.push("Based on what you shared,");
+  }
+
+  // Transparent: what we did
+  parts.push("I found these schemes that may help you:\n");
+  parts.push(choiceSummaryText);
+  parts.push("\nWhich one would you like to know more about? You can reply with the number (1, 2, 3, 4) or the scheme name.");
+  return parts.join(" ");
+}
+
 async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
   const hasProfile = !!(
     profile.state ||
@@ -102,4 +142,5 @@ module.exports = {
   buildOutOfScopeGuidance,
   buildContextualGuidance,
   buildProgressClarifier,
+  buildEmpatheticSchemePicker,
 };

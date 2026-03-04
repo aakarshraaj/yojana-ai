@@ -86,7 +86,7 @@ const CATEGORY_KEYWORDS = {
   minority: ["minority", "religious minority", "muslim", "christian", "sikh"],
   general: ["general category", "open category", "general", "unreserved", "open", "apl"],
   // Special / overlapping
-  pwd: ["divyang", "pwd", "disabled", "differently abled", "viklang", "handicap"],
+  pwd: ["divyang", "pwd", "disabled", "disable", "differently abled", "viklang", "handicap"],
   bpl: ["bpl", "below poverty line", "antodaya"],
 };
 
