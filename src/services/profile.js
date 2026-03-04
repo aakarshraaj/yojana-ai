@@ -170,6 +170,67 @@ function detectProfileConflict(oldProfile, newProfile) {
   return null;
 }
 
+function normalizeDecisionRemainder(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function trimDecisionFiller(remainder, decision) {
+  let out = String(remainder || "").trim();
+  if (!out) return "";
+
+  const yesLead =
+    /^(please\s+)?(?:change|update|proceed|go ahead|do it|confirm|yes|yes please|yes change|yes update)\b[\s,:;-]*/i;
+  const noLead =
+    /^(please\s+)?(?:no|no change|cancel|stop|dont change|don't change|keep same|keep old)\b[\s,:;-]*/i;
+  const leadPattern = decision === "yes" ? yesLead : noLead;
+
+  // Repeatedly strip filler prefixes while preserving real trailing request text.
+  for (let i = 0; i < 3; i += 1) {
+    const stripped = out.replace(leadPattern, "").trim();
+    if (stripped === out) break;
+    out = stripped;
+  }
+
+  const normalized = normalizeDecisionRemainder(out);
+  const yesOnly = new Set([
+    "",
+    "change",
+    "update",
+    "proceed",
+    "go ahead",
+    "do it",
+    "confirm",
+    "yes",
+    "yes please",
+    "ok",
+    "okay",
+    "sure",
+    "right",
+    "correct",
+  ]);
+  const noOnly = new Set([
+    "",
+    "no",
+    "change",
+    "update",
+    "no change",
+    "cancel",
+    "stop",
+    "dont change",
+    "do not change",
+    "keep same",
+    "keep old",
+  ]);
+
+  if (decision === "yes" && yesOnly.has(normalized)) return "";
+  if (decision === "no" && noOnly.has(normalized)) return "";
+  return out;
+}
+
 function parseLeadingDecision(text) {
   const raw = String(text || "").trim();
   const lower = raw.toLowerCase();
@@ -179,9 +240,10 @@ function parseLeadingDecision(text) {
   for (const p of yesPatterns) {
     const m = raw.match(p);
     if (m) {
+      const remainder = raw.slice(m[0].length).replace(/^[,\s.:;-]+/, "").trim();
       return {
         decision: "yes",
-        remainder: raw.slice(m[0].length).replace(/^[,\s.:;-]+/, "").trim(),
+        remainder: trimDecisionFiller(remainder, "yes"),
       };
     }
   }
@@ -190,9 +252,10 @@ function parseLeadingDecision(text) {
   for (const p of noPatterns) {
     const m = raw.match(p);
     if (m) {
+      const remainder = raw.slice(m[0].length).replace(/^[,\s.:;-]+/, "").trim();
       return {
         decision: "no",
-        remainder: raw.slice(m[0].length).replace(/^[,\s.:;-]+/, "").trim(),
+        remainder: trimDecisionFiller(remainder, "no"),
       };
     }
   }

@@ -8,6 +8,7 @@ const {
   isNegativeText,
   isUndoProfileChangeCommand,
   hasProfileSignal,
+  getNextQuestion,
   detectBlankProfileTemplate,
   isResetCommand,
   isDisengageText,
@@ -148,12 +149,15 @@ function createChatHandler({ getSession, runWithRetry, profileService, geography
             session.lastMatches = [];
           }
           if (!parsedDecision.remainder) {
+            const nextQuestion = getNextQuestion(session.profile || {});
+            const localizedNextQuestion = nextQuestion ? await toUserLanguage(nextQuestion) : null;
+            const answer = nextQuestion
+              ? `Updated ${pending.field} to ${pending.to}. ${nextQuestion}`
+              : `Updated ${pending.field} to ${pending.to}. Tell me what support you need next.`;
             return respond({
               memory: session.profile,
-              interview: { nextQuestion: null },
-              answer: await toUserLanguage(
-                `Updated ${pending.field} to ${pending.to}. Tell me what support you need next.`
-              ),
+              interview: { nextQuestion: localizedNextQuestion },
+              answer: await toUserLanguage(answer),
               matches: [],
             });
           }
@@ -162,12 +166,15 @@ function createChatHandler({ getSession, runWithRetry, profileService, geography
           session.pendingProfileChange = null;
           session.pendingQuestion = null;
           if (!parsedDecision.remainder) {
+            const nextQuestion = getNextQuestion(session.profile || {});
+            const localizedNextQuestion = nextQuestion ? await toUserLanguage(nextQuestion) : null;
+            const answer = nextQuestion
+              ? `Okay, I will keep your ${pending.field} as ${pending.from}. ${nextQuestion}`
+              : `Okay, I will keep your ${pending.field} as ${pending.from}. Tell me what support you need next.`;
             return respond({
               memory: session.profile || {},
-              interview: { nextQuestion: null },
-              answer: await toUserLanguage(
-                `Okay, I will keep your ${pending.field} as ${pending.from}. Tell me what support you need next.`
-              ),
+              interview: { nextQuestion: localizedNextQuestion },
+              answer: await toUserLanguage(answer),
               matches: [],
             });
           }
