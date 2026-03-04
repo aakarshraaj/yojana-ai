@@ -1,5 +1,8 @@
+const { normalizeText, escapeRegex } = require("../utils/text");
+const { GEO_CACHE_TTL_MS } = require("../config/constants");
+
 class GeographyService {
-  constructor(db, { cacheTtlMs = 5 * 60 * 1000 } = {}) {
+  constructor(db, { cacheTtlMs = GEO_CACHE_TTL_MS } = {}) {
     this.db = db;
     this.cacheTtlMs = cacheTtlMs;
     this.cache = {
@@ -16,23 +19,11 @@ class GeographyService {
     };
   }
 
-  normalize(value) {
-    return String(value || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  escapeRegex(value) {
-    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
   containsNormalized(text, term) {
-    const normalizedText = this.normalize(text);
-    const normalizedTerm = this.normalize(term);
+    const normalizedText = normalizeText(text);
+    const normalizedTerm = normalizeText(term);
     if (!normalizedText || !normalizedTerm) return false;
-    const termPattern = this.escapeRegex(normalizedTerm).replace(/\s+/g, "\\s+");
+    const termPattern = escapeRegex(normalizedTerm).replace(/\s+/g, "\\s+");
     return new RegExp(`(?:^|\\b)${termPattern}(?:\\b|$)`, "i").test(normalizedText);
   }
 
@@ -74,7 +65,7 @@ class GeographyService {
 
     const states = statesData.map((row) => ({
       id: row.id,
-      name: this.normalize(row.name),
+      name: normalizeText(row.name),
       code: row.code || null,
     }));
 
@@ -82,8 +73,8 @@ class GeographyService {
 
     const districts = districtsData.map((row) => ({
       id: row.id,
-      district: this.normalize(row?.name || ""),
-      state: row?.states?.name ? this.normalize(row.states.name) : null,
+      district: normalizeText(row?.name || ""),
+      state: row?.states?.name ? normalizeText(row.states.name) : null,
       stateCode: row?.states?.code || null,
     }));
     const districtsByName = new Map();
@@ -95,14 +86,14 @@ class GeographyService {
     const districtNamesSorted = [...new Set(districts.map((d) => d.district).filter(Boolean))].sort((a, b) => b.length - a.length);
 
     const cities = citiesData.map((row) => {
-      const districtName = row?.districts?.name ? this.normalize(row.districts.name) : null;
+      const districtName = row?.districts?.name ? normalizeText(row.districts.name) : null;
       const stateName = row?.districts?.states?.name
-        ? this.normalize(row.districts.states.name)
-        : this.normalize(row?.state?.name || "");
+        ? normalizeText(row.districts.states.name)
+        : normalizeText(row?.state?.name || "");
       const stateCode = row?.districts?.states?.code || null;
       const cityNameRaw = row?.name || row?.search_name || "";
-      const cityName = this.normalize(cityNameRaw);
-      const searchName = this.normalize(row?.search_name || cityNameRaw);
+      const cityName = normalizeText(cityNameRaw);
+      const searchName = normalizeText(row?.search_name || cityNameRaw);
 
       return {
         city: cityName,
@@ -148,13 +139,13 @@ class GeographyService {
 
   async isValidState(stateName) {
     await this.refreshCache();
-    const normalized = this.normalize(stateName);
+    const normalized = normalizeText(stateName);
     return this.cache.statesByName.has(normalized);
   }
 
   async getDistrictsByState(stateName) {
     await this.refreshCache();
-    const normalized = this.normalize(stateName);
+    const normalized = normalizeText(stateName);
     if (!normalized) return [];
     const districts = new Set();
     for (const district of this.cache.districts) {
@@ -164,7 +155,7 @@ class GeographyService {
   }
 
   findCityInText(text) {
-    const lower = this.normalize(text);
+    const lower = normalizeText(text);
     if (!lower) return null;
     for (const cityName of this.cache.cityNamesSorted) {
       if (this.containsNormalized(lower, cityName)) {
@@ -175,7 +166,7 @@ class GeographyService {
   }
 
   findStateInText(text) {
-    const lower = this.normalize(text);
+    const lower = normalizeText(text);
     if (!lower) return null;
     for (const state of this.cache.states) {
       if (this.containsNormalized(lower, state.name)) return state;
@@ -184,7 +175,7 @@ class GeographyService {
   }
 
   findDistrictInText(text) {
-    const lower = this.normalize(text);
+    const lower = normalizeText(text);
     if (!lower) return null;
     for (const districtName of this.cache.districtNamesSorted) {
       if (this.containsNormalized(lower, districtName)) {
@@ -196,7 +187,7 @@ class GeographyService {
 
   async getLocationInfo(cityInput) {
     await this.refreshCache();
-    const normalized = this.normalize(cityInput);
+    const normalized = normalizeText(cityInput);
     if (!normalized) return null;
     const cached = this.cache.citiesBySearch.get(normalized);
     if (cached) return { ...cached };
@@ -222,11 +213,11 @@ class GeographyService {
 
       if (data) {
         return {
-          city: this.normalize(data.name || data.search_name || normalized),
-          district: data?.districts?.name ? this.normalize(data.districts.name) : null,
-          state: data?.districts?.states?.name ? this.normalize(data.districts.states.name) : null,
+          city: normalizeText(data.name || data.search_name || normalized),
+          district: data?.districts?.name ? normalizeText(data.districts.name) : null,
+          state: data?.districts?.states?.name ? normalizeText(data.districts.states.name) : null,
           stateCode: data?.districts?.states?.code || null,
-          searchName: this.normalize(data.search_name || data.name || normalized),
+          searchName: normalizeText(data.search_name || data.name || normalized),
         };
       }
     }
@@ -240,10 +231,10 @@ class GeographyService {
     if (!districtData) return null;
     return {
       city: null,
-      district: this.normalize(districtData.name || normalized),
-      state: districtData?.states?.name ? this.normalize(districtData.states.name) : null,
+      district: normalizeText(districtData.name || normalized),
+      state: districtData?.states?.name ? normalizeText(districtData.states.name) : null,
       stateCode: districtData?.states?.code || null,
-      searchName: this.normalize(districtData.name || normalized),
+      searchName: normalizeText(districtData.name || normalized),
     };
   }
 
@@ -299,7 +290,7 @@ class GeographyService {
 
   async extractMentionedStates(text) {
     await this.refreshCache();
-    const lower = this.normalize(text);
+    const lower = normalizeText(text);
     if (!lower) return [];
 
     const states = new Set();

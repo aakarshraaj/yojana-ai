@@ -1,5 +1,6 @@
 const { generateEmbedding } = require("../../../../lib/openai");
 const { searchSchemes } = require("../../../../lib/supabase");
+const { TIMEOUT_EMBED_MS, TIMEOUT_SEARCH_MS } = require("../../../config/constants");
 const { profileText, getNextQuestion } = require("../../../services/profile");
 const {
   normalizeMatches,
@@ -64,12 +65,12 @@ async function handleDiscoveryAndDetails({
 }) {
   const query = `${canonicalQuestion}\n\nKnown profile: ${profileText(mergedProfile)}`;
   const embedding = await runWithRetry(() => generateEmbedding(query), {
-    timeoutMs: 10000,
+    timeoutMs: TIMEOUT_EMBED_MS,
     retries: 1,
     label: "embed",
   });
   const rawMatches = await runWithRetry(() => searchSchemes(embedding), {
-    timeoutMs: 10000,
+    timeoutMs: TIMEOUT_SEARCH_MS,
     retries: 1,
     label: "search",
   });

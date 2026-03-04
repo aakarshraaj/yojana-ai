@@ -1,16 +1,5 @@
 const { PROFESSION_KEYWORDS, CATEGORY_KEYWORDS } = require("../config/geography");
-
-function normalizeText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function escapeRegex(value) {
-  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+const { normalizeText, escapeRegex } = require("../utils/text");
 
 function toNumber(value) {
   const n = Number(String(value || "").replace(/,/g, ""));
@@ -49,6 +38,15 @@ function extractIncome(text) {
     )
   ) {
     return 0;
+  }
+
+  // Qualitative "low income" - tier 2 colloquial (income low hai, kam income, gareeb, etc.)
+  if (
+    /\b(income\s+low|low\s+income|income\s+kam|kam\s+income|income\s+bahut\s+kam|bahut\s+low|garib|gareeb|gareebi|bpl|below\s+poverty)\b/i.test(
+      text
+    )
+  ) {
+    return 50000; // ~50k annual as conservative low-income proxy
   }
 
   const patterns = [
@@ -171,11 +169,7 @@ function detectProfileConflict(oldProfile, newProfile) {
 }
 
 function normalizeDecisionRemainder(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return normalizeText(value);
 }
 
 function trimDecisionFiller(remainder, decision) {
@@ -184,8 +178,9 @@ function trimDecisionFiller(remainder, decision) {
 
   const yesLead =
     /^(please\s+)?(?:change|update|proceed|go ahead|do it|confirm|yes|yes please|yes change|yes update)\b[\s,:;-]*/i;
+  // "keep old" without "one" = filler; "keep old one" = user means "keep option 1" - preserve it
   const noLead =
-    /^(please\s+)?(?:no|no change|cancel|stop|dont change|don't change|keep same|keep old)\b[\s,:;-]*/i;
+    /^(please\s+)?(?:no|no change|cancel|stop|dont change|don't change|keep same|keep old(?!\s+one))\b[\s,:;-]*/i;
   const leadPattern = decision === "yes" ? yesLead : noLead;
 
   // Repeatedly strip filler prefixes while preserving real trailing request text.
@@ -308,10 +303,10 @@ function getNextQuestion(profile) {
   if (!profile.state) return "Which state do you live in?";
   if (!profile.district) return "Which district do you live in?";
   if (profile.age == null) return "What is your age?";
-  if (!profile.profession) return "What is your profession (farmer, student, worker, entrepreneur)?";
+  if (!profile.profession) return "What is your profession? (farmer, student, worker, entrepreneur)";
   if (profile.profession === "farmer" && profile.landAcres == null) return "How many acres of land do you own?";
-  if (profile.incomeAnnual == null) return "What is your annual household income in INR?";
-  if (!profile.category) return "What is your social category (SC, ST, OBC, EWS, minority, or general)?";
+  if (profile.incomeAnnual == null) return "What is your annual household income? (or say no income)";
+  if (!profile.category) return "Your social category? (SC, ST, OBC, EWS, or General)";
   return null;
 }
 

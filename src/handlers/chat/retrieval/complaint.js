@@ -1,5 +1,6 @@
 const { generateEmbedding } = require("../../../../lib/openai");
 const { searchSchemes } = require("../../../../lib/supabase");
+const { TIMEOUT_EMBED_MS, TIMEOUT_SEARCH_MS } = require("../../../config/constants");
 const { profileText } = require("../../../services/profile");
 const {
   applyStateGuardrails,
@@ -26,12 +27,12 @@ async function handleComplaintCorrection({
     ? `${canonicalQuestion}\n\nStrictly for state: ${mergedProfile.state}`
     : canonicalQuestion;
   const embedding = await runWithRetry(() => generateEmbedding(correctionQuery), {
-    timeoutMs: 10000,
+    timeoutMs: TIMEOUT_EMBED_MS,
     retries: 1,
     label: "embed_complaint",
   });
   const rawMatches = await runWithRetry(() => searchSchemes(embedding), {
-    timeoutMs: 10000,
+    timeoutMs: TIMEOUT_SEARCH_MS,
     retries: 1,
     label: "search_complaint",
   });

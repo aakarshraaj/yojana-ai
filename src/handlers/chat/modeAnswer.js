@@ -1,4 +1,5 @@
 const { generateChatResponse } = require("../../../lib/openai");
+const { TIMEOUT_CHAT_MS } = require("../../config/constants");
 
 function validateGeneratedAnswer(answer, mode, intent) {
   const text = String(answer || "").toLowerCase();
@@ -24,14 +25,14 @@ function createGenerateValidatedModeAnswer({ runWithRetry }) {
   }) {
     const first = await runWithRetry(
       () => generateChatResponse(question, context, memoryContext, nextQuestion, mode),
-      { timeoutMs: 12000, retries: 0, label: "chat_generation_first" }
+      { timeoutMs: TIMEOUT_CHAT_MS, retries: 0, label: "chat_generation_first" }
     );
     if (validateGeneratedAnswer(first, mode, intent)) return first;
 
     const strictQuestion = `STRICT MODE (${mode}) - do not violate mode rules.\n\n${question}`;
     const second = await runWithRetry(
       () => generateChatResponse(strictQuestion, context, memoryContext, nextQuestion, mode),
-      { timeoutMs: 12000, retries: 0, label: "chat_generation_second" }
+      { timeoutMs: TIMEOUT_CHAT_MS, retries: 0, label: "chat_generation_second" }
     );
     if (validateGeneratedAnswer(second, mode, intent)) return second;
 

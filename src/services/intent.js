@@ -1,5 +1,6 @@
 const { hasProfileSignal } = require("./profile");
 const { normalizeText, tokenSet, isDetailIntent, isCompareIntent, isSelectionIntent, extractSelectionIndex } = require("./scheme");
+const { TIMEOUT_INTENT_MS } = require("../config/constants");
 
 function isLikelyGibberish(text) {
   const t = String(text || "").trim().toLowerCase();
@@ -145,7 +146,7 @@ async function classifyIntentSmart(question, session, { classifyIntentModel, run
           hasSelectedScheme: !!session.selectedScheme,
           lastAssistantAction: session.lastAssistantAction || null,
         }),
-      { timeoutMs: 6000, retries: 1, label: "intent" }
+      { timeoutMs: TIMEOUT_INTENT_MS, retries: 1, label: "intent" }
     );
 
     const validIntents = new Set([

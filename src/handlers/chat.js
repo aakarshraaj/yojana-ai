@@ -21,6 +21,7 @@ const {
   buildProgressClarifier,
 } = require("../services/guidance");
 const { createGenerateValidatedModeAnswer } = require("./chat/modeAnswer");
+const { TIMEOUT_TRANSLATE_MS } = require("../config/constants");
 const { createBasicIntentHandlers } = require("./chat/basicIntents");
 const { handleRetrievalFlow } = require("./chat/retrievalFlow");
 
@@ -30,15 +31,15 @@ function createChatHandler({ getSession, runWithRetry, profileService, geography
   const basicIntentHandlers = createBasicIntentHandlers();
 
   async function translateToEnglish(text) {
-    return runWithRetry(() => translateText(text, "English"), { timeoutMs: 8000, retries: 1, label: "translate_en" });
+    return runWithRetry(() => translateText(text, "English"), { timeoutMs: TIMEOUT_TRANSLATE_MS, retries: 1, label: "translate_en" });
   }
 
   async function translateToHindi(text) {
-    return runWithRetry(() => translateText(text, "Hindi"), { timeoutMs: 8000, retries: 1, label: "translate_hi" });
+    return runWithRetry(() => translateText(text, "Hindi"), { timeoutMs: TIMEOUT_TRANSLATE_MS, retries: 1, label: "translate_hi" });
   }
 
   async function translateToMarathi(text) {
-    return runWithRetry(() => translateText(text, "Marathi"), { timeoutMs: 8000, retries: 1, label: "translate_mr" });
+    return runWithRetry(() => translateText(text, "Marathi"), { timeoutMs: TIMEOUT_TRANSLATE_MS, retries: 1, label: "translate_mr" });
   }
 
   return async function chatHandler(req, res) {
@@ -254,16 +255,19 @@ function createChatHandler({ getSession, runWithRetry, profileService, geography
         canonicalNormalized.split(" ").filter(Boolean).length <= 3;
       session.lastCanonicalQuestion = canonicalNormalized;
 
-      console.log(
-        JSON.stringify({
-          tag: "chat_turn",
-          sessionId,
-          intent,
-          intentConfidence: intentMeta.confidence,
-          intentSource: intentMeta.source || "rule",
-          profileState: mergedProfile.state || null,
-        })
-      );
+      const log = req.log;
+      if (log) {
+        log.info(
+          {
+            sessionId,
+            intent,
+            intentConfidence: intentMeta.confidence,
+            intentSource: intentMeta.source || "rule",
+            profileState: mergedProfile.state || null,
+          },
+          "chat_turn"
+        );
+      }
 
       if (isRepeatedLowSignal) {
         session.lastAssistantAction = "clarify";
@@ -337,8 +341,10 @@ function createChatHandler({ getSession, runWithRetry, profileService, geography
         geographyService,
       });
     } catch (err) {
-      console.error("FULL ERROR DUMP:");
-      console.error(err?.stack || err);
+      const log = req.log;
+      if (log) {
+        log.error({ err: err?.message, stack: err?.stack }, "CHAT_HANDLER_ERROR");
+      }
       return res.status(500).json({ error: "Internal server error" });
     }
   };

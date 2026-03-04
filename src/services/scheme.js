@@ -1,4 +1,5 @@
 const { PROFESSION_KEYWORDS } = require("../config/geography");
+const { normalizeText } = require("../utils/text");
 
 function normalizeMatches(matches) {
   return (matches || []).map((m) => ({
@@ -6,14 +7,6 @@ function normalizeMatches(matches) {
     name: m.name || m.scheme_name || m.title || m.slug || "Unnamed scheme",
     similarity: Number(m.similarity || 0),
   }));
-}
-
-function normalizeText(text) {
-  return String(text || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function tokenSet(text) {
@@ -254,7 +247,7 @@ function isCompareIntent(question) {
 }
 
 function isSelectionIntent(question) {
-  return /(^\s*\d{1,2}\s*$|select|choose|pick|go with|finalize|this one|that one|first one|second one|third one|option\s*\d{1,2}|scheme\s*\d{1,2}|no\.?\s*\d{1,2}|pehla|pahla|dusra|doosra|teesra|tisra|पहला|दूसरा|तीसरा|पहिली|दुसरी|तिसरी)/i.test(
+  return /(^\s*\d{1,2}\s*$|select|choose|pick|go with|finalize|this one|that one|first one|second one|third one|option\s*\d{1,2}|scheme\s*\d{1,2}|no\.?\s*\d{1,2}|pehla|pahla|dusra|doosra|teesra|tisra|yeh wala|ye wala|us wala|wo wala|iss wala|is wala|पहला|दूसरा|तीसरा|पहिली|दुसरी|तिसरी)/i.test(
     question
   );
 }
@@ -284,6 +277,10 @@ function extractSelectionIndex(question) {
     const n = Number(embeddedDigit[1]);
     if (Number.isFinite(n) && n >= 1 && n <= 10) return n - 1;
   }
+
+  // Demonstrative references: yeh wala = this one (first), us/wo wala = that one (second)
+  if (/\b(yeh wala|ye wala|iss wala|is wala|this one|yahi wala)\b/i.test(lower)) return 0;
+  if (/\b(us wala|wo wala|uss wala|that one|wahi wala)\b/i.test(lower)) return 1;
 
   const ordinals = [
     { idx: 0, keys: ["first", "1st", "pehla", "pahla", "पहला", "पहिली"] },
@@ -319,12 +316,59 @@ function extractSelectionIndex(question) {
     }
   }
 
-  if (tokenCount <= 3) {
+  if (tokenCount <= 5) {
     const shortDigit = lower.match(/\b(\d{1,2})\b/);
     if (shortDigit) {
       const n = Number(shortDigit[1]);
       if (Number.isFinite(n) && n >= 1 && n <= 10) return n - 1;
     }
+  }
+
+  return null;
+}
+
+/**
+ * Extract two scheme indices from compare-style questions: "1 and 2", "first and second", "compare 1 2"
+ */
+function extractComparePairIndices(question) {
+  const lower = String(question || "").toLowerCase().trim();
+  if (!lower) return null;
+
+  const ordinals = [
+    { words: ["first", "1st", "pehla", "pahla"], idx: 0 },
+    { words: ["second", "2nd", "dusra", "doosra"], idx: 1 },
+    { words: ["third", "3rd", "teesra", "tisra"], idx: 2 },
+    { words: ["fourth", "4th", "chautha"], idx: 3 },
+    { words: ["fifth", "5th", "paanchwa"], idx: 4 },
+  ];
+
+  // "1 and 2", "1 aur 2", "1, 2", "1 & 2", "compare 1 2", "1 and 2 compare"
+  const twoDigits = lower.match(/\b(\d{1,2})\s*(?:and|aur|&|,|or)\s*(\d{1,2})\b/);
+  if (twoDigits) {
+    const a = Number(twoDigits[1]);
+    const b = Number(twoDigits[2]);
+    if (a >= 1 && a <= 10 && b >= 1 && b <= 10 && a !== b) {
+      return [Math.min(a, b) - 1, Math.max(a, b) - 1];
+    }
+  }
+
+  // "first and second", "pehla aur dusra"
+  for (const o1 of ordinals) {
+    for (const o2 of ordinals) {
+      if (o1.idx === o2.idx) continue;
+      const hasFirst = o1.words.some((w) => new RegExp(`\\b${w}\\b`).test(lower));
+      const hasSecond = o2.words.some((w) => new RegExp(`\\b${w}\\b`).test(lower));
+      if (hasFirst && hasSecond) {
+        return [Math.min(o1.idx, o2.idx), Math.max(o1.idx, o2.idx)];
+      }
+    }
+  }
+
+  // "1 2" or "scheme 1 scheme 2" (two separate numbers)
+  const allDigits = [...lower.matchAll(/\b(\d{1,2})\b/g)].map((m) => Number(m[1]));
+  const valid = [...new Set(allDigits)].filter((n) => n >= 1 && n <= 10).sort((a, b) => a - b);
+  if (valid.length >= 2) {
+    return [valid[0] - 1, valid[1] - 1];
   }
 
   return null;
@@ -344,9 +388,22 @@ function choiceSummary(matches, limit = 4) {
 }
 
 function findCompareSchemes(question, candidateMatches) {
+  const items = normalizeMatches(candidateMatches);
+  if (!items.length) return [];
+
+  // Try index-based: "1 and 2", "first and second", "compare 1 2"
+  const pairIndices = extractComparePairIndices(question);
+  if (pairIndices) {
+    const [i, j] = pairIndices;
+    if (i < items.length && j < items.length) {
+      return [items[i], items[j]];
+    }
+  }
+
+  // Fallback: name/token overlap
   const qTokens = tokenSet(question);
   const matched = [];
-  for (const m of normalizeMatches(candidateMatches)) {
+  for (const m of items) {
     const nameTokens = tokenSet(m.name);
     const overlap = [...nameTokens].filter((t) => qTokens.has(t)).length;
     if (overlap >= 2 || normalizeText(question).includes(normalizeText(m.name))) {
@@ -357,14 +414,23 @@ function findCompareSchemes(question, candidateMatches) {
 }
 
 function findFocusedScheme(question, candidateMatches) {
+  const items = normalizeMatches(candidateMatches);
+  if (!items.length) return null;
+
   const qNorm = normalizeText(question);
   const qTokens = tokenSet(question);
   const detailIntent = isDetailIntent(question);
 
+  // Demonstrative "this one" / "that one" when no scheme name mentioned
+  const selIdx = extractSelectionIndex(question);
+  if (selIdx != null && selIdx < items.length) {
+    return items[selIdx];
+  }
+
   let best = null;
   let bestScore = 0;
 
-  for (const match of normalizeMatches(candidateMatches)) {
+  for (const match of items) {
     const nameNorm = normalizeText(match.name);
     const nameTokens = tokenSet(match.name);
     const overlap = [...nameTokens].filter((t) => qTokens.has(t)).length;
@@ -395,6 +461,7 @@ module.exports = {
   isCompareIntent,
   isSelectionIntent,
   extractSelectionIndex,
+  extractComparePairIndices,
   pickBySelectionIndex,
   choiceSummary,
   findCompareSchemes,

@@ -14,56 +14,64 @@ async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
 
   let base;
   if (selectedScheme) {
-    base = `If you want, I can continue with ${selectedScheme}. Ask for documents, eligibility, apply link, office address, or contact details.`;
+    base = `Want details for ${selectedScheme}? Ask for documents, apply link, or office address.`;
   } else if (hasProfile) {
-    base = "Tell me what you want next: find new schemes, compare two schemes, or detailed help for one scheme.";
+    base = "What next? Find schemes, compare two, or get details of one.";
   } else {
-    base = "I can help with schemes. Share your state and what support you need (scholarship, pension, farmer, business, health).";
+    base = "Share your state and need—e.g. Maharashtra, scholarship.";
   }
   return toUserLanguage(base);
 }
 
 async function buildPendingClarifier(session, toUserLanguage) {
   const pendingRaw = String(session.pendingQuestion || "").toLowerCase();
-  const pendingMap = {
-    "user intent clarification": "your exact request (discover, compare, or scheme details)",
-    "state and support type": "your state and support type",
-    "state and exact support you need": "your state and exact support you need",
-    "state and the support type you need": "your state and support type",
-    "which scheme do you mean": "which scheme you mean",
-    "scheme name for details": "the exact scheme name for details",
-    "which two schemes to compare": "which two schemes you want to compare",
-    "fill state, age, category, occupation, income, and need": "your state and what support you need",
+
+  // Map to the exact question to echo - direct, friendly, tier-2 friendly
+  const questionMap = {
+    "which state do you live in": "Which state do you live in? (e.g. Maharashtra, Bihar)",
+    "which district do you live in": "Which district?",
+    "what is your age": "What is your age?",
+    "what is your profession (farmer, student, worker, entrepreneur)?": "What do you do? (farmer, student, worker, business)",
+    "how many acres of land do you own?": "How many acres of land do you own?",
+    "what is your annual household income in inr?": "What is your annual income? (or say no income)",
+    "what is your social category (sc, st, obc, ews, minority, or general)?": "Your category? (SC, ST, OBC, EWS, or General)",
+    "user intent clarification": "What do you need? Find schemes, compare two, or details of one?",
+    "your exact request (discover, compare, or scheme details)": "What do you need? Find schemes, compare two, or details of one?",
+    "state and support type": "Share your state and what you need (e.g. scholarship, loan, pension)",
+    "state and exact support you need": "Which state? And what support (scholarship, pension, loan)?",
+    "state and the support type you need": "Your state and support type?",
+    "which scheme do you mean": "Which scheme? Reply with the number (1, 2, 3) or name.",
+    "scheme name for details": "Which scheme do you want details for?",
+    "which two schemes to compare": "Which two? Reply like: 1 and 2, or names.",
+    "fill state, age, category, occupation, income, and need": "State and what you need (e.g. Maharashtra, scholarship)",
+    "what you need help with": "What do you need? State + support type.",
+    "confirm profile change": "Should I update that? (yes/no)",
   };
-  const pending = pendingMap[pendingRaw] || session.pendingQuestion || "what you need help with";
-  return toUserLanguage(`Please answer this so I can proceed: ${pending}.`);
+  const exactQuestion = questionMap[pendingRaw] || session.pendingQuestion;
+  return toUserLanguage(exactQuestion ? `${exactQuestion}` : "What would you like help with?");
 }
 
 async function buildPurposeGuidance(toUserLanguage) {
   return toUserLanguage(
-    "I can help you discover government schemes, compare options, or guide applications. Tell me your state and what support you need (scholarship, pension, farmer, business, health)."
+    "I help with government schemes. Share your state and need—e.g. 'Maharashtra, scholarship' or 'Bihar, farmer loan'."
   );
 }
 
 async function buildOutOfScopeGuidance(toUserLanguage, profile = null) {
   const next =
     profile && hasProfileSignal(profile)
-      ? "If you want, continue with your scheme search by telling the exact need (for example: scholarship, pension, business loan, farmer support)."
-      : "If you want to continue here, share your state and what support you need (scholarship, pension, business, farmer, health).";
-  return toUserLanguage(`I am designed for government scheme guidance only. ${next}`);
+      ? "To continue, tell me your need (e.g. scholarship, pension, loan)."
+      : "Share your state and need (e.g. scholarship, pension, business).";
+  return toUserLanguage(`I only help with government schemes. ${next}`);
 }
 
 async function buildContextualGuidance(question, profile, toUserLanguage) {
   const supportType = inferSupportType(question);
   if (supportType === "exam_support") {
     if (!profile.state) {
-      return toUserLanguage(
-        "For UPSC/exam support schemes, tell me your state first. Then I can suggest coaching/scholarship schemes relevant to your state and category."
-      );
+      return toUserLanguage("For UPSC/exam schemes, tell me your state first.");
     }
-    return toUserLanguage(
-      "Tell me your category and income range. I will find UPSC/coaching/scholarship schemes for your profile."
-    );
+    return toUserLanguage("Your category and income? I'll find exam/coaching schemes.");
   }
 
   return buildPurposeGuidance(toUserLanguage);
@@ -71,21 +79,20 @@ async function buildContextualGuidance(question, profile, toUserLanguage) {
 
 async function buildProgressClarifier(profile, toUserLanguage) {
   const summary = [];
-  if (profile.age != null) summary.push(`age: ${profile.age}`);
-  if (profile.profession) summary.push(`profession: ${profile.profession}`);
-  if (profile.incomeAnnual != null) summary.push(`income: INR ${profile.incomeAnnual}`);
-  if (profile.category) summary.push(`category: ${profile.category}`);
-  if (profile.state) summary.push(`state: ${profile.state}`);
-  if (profile.landAcres != null) summary.push(`land: ${profile.landAcres} acres`);
+  if (profile.age != null) summary.push(`age ${profile.age}`);
+  if (profile.profession) summary.push(profile.profession);
+  if (profile.incomeAnnual != null) summary.push(`income ₹${profile.incomeAnnual}`);
+  if (profile.category) summary.push(profile.category);
+  if (profile.state) summary.push(profile.state);
+  if (profile.landAcres != null) summary.push(`${profile.landAcres} acres`);
 
   const nextQuestion = getNextQuestion(profile);
   if (!nextQuestion) {
-    return toUserLanguage("Thanks, I have enough profile details. Tell me what type of schemes you want (scholarship, pension, farmer, business, health)."
-    );
+    return toUserLanguage("What type of schemes? (scholarship, pension, farmer, business)");
   }
 
   if (summary.length === 0) return toUserLanguage(nextQuestion);
-  return toUserLanguage(`Noted ${summary.join(", ")}. ${nextQuestion}`);
+  return toUserLanguage(`Got it (${summary.join(", ")}). ${nextQuestion}`);
 }
 
 module.exports = {

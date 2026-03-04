@@ -1,3 +1,5 @@
+const { QUESTION_MAX_LENGTH, SESSION_ID_MAX_LENGTH, MESSAGE_MAX_LENGTH } = require("../config/constants");
+
 function containsLikelyXSS(text) {
   return /<script|<iframe|javascript:/i.test(String(text || ""));
 }
@@ -9,7 +11,7 @@ function validateChatRequest(req, res, next) {
   if (typeof question !== "string" || question.trim().length === 0) {
     errors.push("question is required");
   } else {
-    if (question.length > 5000) errors.push("question exceeds 5000 characters");
+    if (question.length > QUESTION_MAX_LENGTH) errors.push(`question exceeds ${QUESTION_MAX_LENGTH} characters`);
     if (containsLikelyXSS(question)) errors.push("question contains invalid content");
   }
 
@@ -22,7 +24,7 @@ function validateChatRequest(req, res, next) {
   }
 
   if (sessionId != null) {
-    if (typeof sessionId !== "string" || sessionId.length > 100) {
+    if (typeof sessionId !== "string" || sessionId.length > SESSION_ID_MAX_LENGTH) {
       errors.push("invalid sessionId");
     }
   }
@@ -39,7 +41,7 @@ function validateParseRequest(req, res, next) {
   if (typeof message !== "string" || message.trim().length === 0) {
     return res.status(400).json({ error: "message is required" });
   }
-  if (message.length > 5000 || containsLikelyXSS(message)) {
+  if (message.length > MESSAGE_MAX_LENGTH || containsLikelyXSS(message)) {
     return res.status(400).json({ error: "Invalid message" });
   }
   return next();
