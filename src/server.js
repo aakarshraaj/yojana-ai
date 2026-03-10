@@ -61,6 +61,12 @@ const sessionManager = createSessionManager({
 });
 
 const geographyService = new GeographyService(getSupabaseClient());
+
+// Warm up the cache asynchronously on boot so the first chat request isn't slow
+geographyService.refreshCache().catch(err => {
+  logger.warn({ err: err?.message }, "Failed to warm up geography cache on boot");
+});
+
 const profileService = createProfileService({ geographyService });
 
 app.get("/geo/states", async (req, res) => {

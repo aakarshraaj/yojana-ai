@@ -15,7 +15,7 @@ function createChatHandler({ getSession, runWithRetry, geographyService }) {
 
       // Pre-process geography from user input to help the LLM with district->state mapping
       const extractedLocation = await runWithRetry(() => geographyService.extractFromText(question), {
-        timeoutMs: 5000,
+        timeoutMs: 15000,
         retries: 1,
         label: "geo_extraction"
       });
