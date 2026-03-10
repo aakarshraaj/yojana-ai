@@ -1,7 +1,7 @@
-const { generateEmbedding } = require("../../../../lib/openai");
-const { searchSchemes } = require("../../../../lib/supabase");
-const { applyStateGuardrails, rankMatches, extractSchemeSections } = require("../../../services/scheme");
-const { TIMEOUT_EMBED_MS, TIMEOUT_SEARCH_MS } = require("../../../config/constants");
+const { generateEmbedding } = require("../../../lib/openai");
+const { searchSchemes } = require("../../../lib/supabase");
+const { applyStateGuardrails, rankMatches, extractSchemeSections } = require("../../services/scheme");
+const { TIMEOUT_EMBED_MS, TIMEOUT_SEARCH_MS } = require("../../config/constants");
 
 async function executeSearchSchemesTool({ args, runWithRetry, geographyService }) {
     const { profile, query } = args;
