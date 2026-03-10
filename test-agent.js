@@ -7,7 +7,7 @@ const { runWithRetry } = require("./src/services/runtime");
 
 async function test() {
     console.log("Testing full cycle...");
-    const history = [{ role: "user", content: "bro i'm a low income 47 year old, planning s small business in westbengal" }];
+    const history = [{ role: "user", content: "i'm a farmer in bihar, 47 year old. I'm an SC" }];
     const session = { profile: {} };
 
     const firstMsg = await runAgentTurn(history, session);

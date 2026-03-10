@@ -70,6 +70,8 @@ async function applyStateGuardrails(matches, profile, { geographyService = null 
 
   let droppedCount = 0;
   const filtered = [];
+  const normalizedProfileState = normalizeText(profile.state);
+
   for (const m of normalized) {
     const corpus = `${String(m.name || "")} ${JSON.stringify(m.raw_json || "")}`;
     const mentionedStates = await extractMentionedStates(corpus, { geographyService });
@@ -81,7 +83,7 @@ async function applyStateGuardrails(matches, profile, { geographyService = null 
       droppedCount += 1;
       continue;
     }
-    if (mentionedStates.includes(profile.state)) {
+    if (mentionedStates.includes(normalizedProfileState)) {
       filtered.push(m);
       continue;
     }
