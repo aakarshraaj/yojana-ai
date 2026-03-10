@@ -13,6 +13,19 @@ function createChatHandler({ getSession, runWithRetry, geographyService }) {
         session.conversationHistory = [];
       }
 
+      // Pre-process geography from user input to help the LLM with district->state mapping
+      const extractedLocation = await runWithRetry(() => geographyService.extractFromText(question), {
+        timeoutMs: 5000,
+        retries: 1,
+        label: "geo_extraction"
+      });
+
+      if (extractedLocation && (extractedLocation.state || extractedLocation.district)) {
+        if (!session.profile) session.profile = {};
+        if (extractedLocation.state) session.profile.state = extractedLocation.state;
+        if (extractedLocation.district) session.profile.district = extractedLocation.district;
+      }
+
       // Push the new user message
       session.conversationHistory.push({ role: "user", content: question });
 
