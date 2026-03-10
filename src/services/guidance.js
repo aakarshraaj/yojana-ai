@@ -64,31 +64,10 @@ async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
 }
 
 async function buildPendingClarifier(session, toUserLanguage) {
-  const pendingRaw = String(session.pendingQuestion || "").toLowerCase();
-
-  // Map to the exact question to echo - direct, friendly, tier-2 friendly
-  const questionMap = {
-    "which state do you live in": "Which state do you live in? (e.g. Maharashtra, Bihar)",
-    "which district do you live in": "Which district?",
-    "what is your age": "What is your age?",
-    "what is your profession (farmer, student, worker, entrepreneur)?": "What do you do? (farmer, student, worker, business)",
-    "how many acres of land do you own?": "How many acres of land do you own?",
-    "what is your annual household income in inr?": "What is your annual income? (or say no income)",
-    "what is your social category (sc, st, obc, ews, minority, or general)?": "Your category? (SC, ST, OBC, EWS, or General)",
-    "user intent clarification": "What do you need? Find schemes, compare two, or details of one?",
-    "your exact request (discover, compare, or scheme details)": "What do you need? Find schemes, compare two, or details of one?",
-    "state and support type": "Share your state and what you need (e.g. scholarship, loan, pension)",
-    "state and exact support you need": "Which state? And what support (scholarship, pension, loan)?",
-    "state and the support type you need": "Your state and support type?",
-    "which scheme do you mean": "Which scheme? Reply with the number (1, 2, 3) or name.",
-    "scheme name for details": "Which scheme do you want details for?",
-    "which two schemes to compare": "Which two? Reply like: 1 and 2, or names.",
-    "fill state, age, category, occupation, income, and need": "State and what you need (e.g. Maharashtra, scholarship)",
-    "what you need help with": "What do you need? State + support type.",
-    "confirm profile change": "Should I update that? (yes/no)",
-  };
-  const exactQuestion = questionMap[pendingRaw] || session.pendingQuestion;
-  return toUserLanguage(exactQuestion ? `${exactQuestion}` : "What would you like help with?");
+  if (session.pendingQuestion) {
+    return toUserLanguage(session.pendingQuestion);
+  }
+  return toUserLanguage("What would you like help with?");
 }
 
 async function buildPurposeGuidance(toUserLanguage) {

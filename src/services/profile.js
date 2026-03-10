@@ -300,14 +300,30 @@ function hasProfileSignal(profile) {
 }
 
 function getNextQuestion(profile) {
-  if (!profile.state) return "Which state do you live in?";
-  if (!profile.district) return "Which district do you live in?";
-  if (profile.age == null) return "What is your age?";
-  if (!profile.profession) return "What is your profession? (farmer, student, worker, entrepreneur)";
-  if (profile.profession === "farmer" && profile.landAcres == null) return "How many acres of land do you own?";
-  if (profile.incomeAnnual == null) return "What is your annual household income? (or say no income)";
-  if (!profile.category) return "Your social category? (SC, ST, OBC, EWS, or General)";
-  return null;
+  const missing = [];
+  if (!profile.state) missing.push("State");
+  if (!profile.district && profile.state) missing.push("District");
+  // Only explicitly mandate profession/income/category if we have a state
+  if (profile.state) {
+     if (!profile.profession) missing.push("Profession");
+     if (profile.incomeAnnual == null) missing.push("Annual family income");
+     if (!profile.category) missing.push("Social category (like General, SC, ST)");
+  }
+  
+  if (missing.length === 0) return null;
+
+  if (missing.length === 1) {
+    if (missing[0] === "State") return "Which State do you live in?";
+    if (missing[0] === "District") return "Which District do you live in?";
+    if (missing[0] === "Profession") return "What is your profession? (e.g. student, farmer, worker)";
+    if (missing[0] === "Annual family income") return "What is your annual household income? (or say no income)";
+    if (missing[0] === "Social category (like General, SC, ST)") return "What is your social category? (SC, ST, OBC, EWS, or General)";
+  }
+
+  // Conversational grouping of max 2-3 items
+  const askFor = missing.slice(0, 2);
+  const formatted = askFor.join(" and ");
+  return `To find the exact schemes you are eligible for, could you tell me your ${formatted}?`;
 }
 
 function detectBlankProfileTemplate(text) {

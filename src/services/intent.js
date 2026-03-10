@@ -151,7 +151,7 @@ async function classifyIntentSmart(question, session, { classifyIntentModel, run
 
     const validIntents = new Set([
       "smalltalk_noise", "nonsense_noise", "unclear_ack", "complaint_correction", "compare_request",
-      "selection", "detail_request", "clarification_answer", "out_of_scope", "new_discovery",
+      "selection", "detail_request", "clarification_answer", "clarification_question", "out_of_scope", "new_discovery",
     ]);
 
     if (modelResult && validIntents.has(modelResult.intent)) {
