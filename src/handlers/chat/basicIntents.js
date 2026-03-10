@@ -65,6 +65,23 @@ function createBasicIntentHandlers() {
         matches: [],
       });
     },
+
+    clarification_question: async ({ session, mergedProfile, toUserLanguage, respond }) => {
+      // Don't change session.pendingQuestion or lastAssistantAction. Let the retrieval flow
+      // or chat loop answer this dynamically, or provide a canned fallback if needed, but return to the pending question.
+      const reminder = session.pendingQuestion ? await toUserLanguage(session.pendingQuestion) : "";
+
+      // For now, since we don't have a RAG knowledge base for general concept questions ready yet, we output a standard fallback.
+      // In next iteration we could query LLM directly for definitions. Here we gently redirect back.
+      return respond({
+        memory: mergedProfile,
+        interview: { nextQuestion: null },
+        answer: await toUserLanguage(
+          "I am a specialized agent designed to find schemes based on profiles. Could you answer the following to help me find schemes for you? " + reminder
+        ),
+        matches: [],
+      });
+    },
   };
 }
 
