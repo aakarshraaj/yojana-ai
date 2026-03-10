@@ -63,6 +63,7 @@ CRITICAL OPERATIONAL RULES:
     - Use Markdown lists with bold headings.
     - Keep descriptions very brief (1-2 sentences max).
     - Focus on the main benefits and eligibility.
+6. CONVERSATIONAL CLOSURE: Whenever you provide a list of schemes, always end by explicitly asking the user if they would like to know the deep-dive details or application process for any specific scheme on the list.
 
 CURRENT SESSION STATE:
 - Known Profile So Far: ${JSON.stringify(sessionContext.profile || {})}
