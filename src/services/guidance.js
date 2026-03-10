@@ -54,11 +54,11 @@ async function buildSmalltalkClarifier(session, profile, toUserLanguage) {
 
   let base;
   if (selectedScheme) {
-    base = `Want details for ${selectedScheme}? Ask for documents, apply link, or office address.`;
+    base = `I'd love to help you with ${selectedScheme}. You can ask me for the documents needed, the application link, or where the local office is.`;
   } else if (hasProfile) {
-    base = "What next? Find schemes, compare two, or get details of one.";
+    base = "I'm here for you! Do you want to find new schemes, compare two options, or get details on a specific one?";
   } else {
-    base = "Share your state and need—e.g. Maharashtra, scholarship.";
+    base = "I'm here to help you find government support. Just tell me your state and what you're looking for—like 'Maharashtra, scholarship'.";
   }
   return toUserLanguage(base);
 }
@@ -72,16 +72,16 @@ async function buildPendingClarifier(session, toUserLanguage) {
 
 async function buildPurposeGuidance(toUserLanguage) {
   return toUserLanguage(
-    "I help with government schemes. Share your state and need—e.g. 'Maharashtra, scholarship' or 'Bihar, farmer loan'."
+    "I'm here to help you navigate government schemes and find the right support. To get started, could you share your state and what kind of help you need? (e.g., 'Maharashtra, scholarship' or 'Bihar, farmer loan')."
   );
 }
 
 async function buildOutOfScopeGuidance(toUserLanguage, profile = null) {
   const next =
     profile && hasProfileSignal(profile)
-      ? "To continue, tell me your need (e.g. scholarship, pension, loan)."
-      : "Share your state and need (e.g. scholarship, pension, business).";
-  return toUserLanguage(`I only help with government schemes. ${next}`);
+      ? "To help me assist you, could you tell me what kind of support you need right now? (e.g., scholarship, pension, or a business loan)."
+      : "To get started finding support, just share your state and what you need (e.g., scholarship, pension, business).";
+  return toUserLanguage(`I completely understand, but I am specifically trained to help with government schemes. ${next}`);
 }
 
 async function buildContextualGuidance(question, profile, toUserLanguage) {
@@ -98,20 +98,23 @@ async function buildContextualGuidance(question, profile, toUserLanguage) {
 
 async function buildProgressClarifier(profile, toUserLanguage) {
   const summary = [];
-  if (profile.age != null) summary.push(`age ${profile.age}`);
+  if (profile.age != null) summary.push(`Age: ${profile.age}`);
   if (profile.profession) summary.push(profile.profession);
-  if (profile.incomeAnnual != null) summary.push(`income ₹${profile.incomeAnnual}`);
+  if (profile.incomeAnnual != null) summary.push(`Income: ₹${profile.incomeAnnual}`);
   if (profile.category) summary.push(profile.category);
   if (profile.state) summary.push(profile.state);
-  if (profile.landAcres != null) summary.push(`${profile.landAcres} acres`);
+  if (profile.landAcres != null) summary.push(`Land: ${profile.landAcres} acres`);
 
   const nextQuestion = getNextQuestion(profile);
   if (!nextQuestion) {
-    return toUserLanguage("What type of schemes? (scholarship, pension, farmer, business)");
+    return toUserLanguage("Thanks for sharing that! What type of schemes are you looking for right now? (e.g., scholarship, pension, farmer support, business loan)");
   }
 
-  if (summary.length === 0) return toUserLanguage(nextQuestion);
-  return toUserLanguage(`Got it (${summary.join(", ")}). ${nextQuestion}`);
+  if (summary.length === 0) {
+    return toUserLanguage(`I'd love to help you find the right schemes. ${nextQuestion}`);
+  }
+
+  return toUserLanguage(`I've noted your details (${summary.join(", ")}). This helps a lot! ${nextQuestion}`);
 }
 
 module.exports = {

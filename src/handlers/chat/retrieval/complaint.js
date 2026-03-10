@@ -45,7 +45,7 @@ async function handleComplaintCorrection({
 
   let answer;
   if (!matches.length) {
-    answer = `You are right. The previous response mixed the wrong state. I could not find strong ${mergedProfile.state || "state"}-specific matches right now, but I can retry with more profile details.`;
+    answer = `You are completely right, and I apologize for missing that. I couldn't find strong ${mergedProfile.state || "state"}-specific matches right now, but I can definitely retry if we adjust some profile details.`;
   } else {
     const context = buildContext(matches);
     const modelAnswer = await generateValidatedModeAnswer({
@@ -56,7 +56,7 @@ async function handleComplaintCorrection({
       intent: "complaint_correction",
       fallbackAnswer: buildDeterministicList(matches, mergedProfile.state),
     });
-    const acknowledged = `You are right, that was incorrect. I should only show ${mergedProfile.state || "your state"} (or central) schemes.\n\n`;
+    const acknowledged = `You're completely right. I apologize for mixing that up! Let's fix that immediately. Here are the ones strictly for ${mergedProfile.state || "your state"}:\n\n`;
     answer = validateGeneratedAnswer(modelAnswer, "list", "complaint_correction")
       ? acknowledged + modelAnswer
       : `${acknowledged}${buildDeterministicList(matches, mergedProfile.state)}`;
