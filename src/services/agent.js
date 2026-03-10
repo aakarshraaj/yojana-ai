@@ -9,7 +9,7 @@ const tools = [
         type: "function",
         function: {
             name: "search_schemes",
-            description: "Search the database for government schemes based on the user's extracted profile. Call this WHENEVER the user provides enough profile details (especially State and Need) to find schemes, or asks to see schemes, compare schemes, or get details on a specific scheme.",
+            description: "CRITICAL: Call this tool IMMEDIATELY if the user provides any piece of their profile (e.g., State, age, profession, caste). DO NOT ask follow up questions about their profile. Call this tool to perform a search first.",
             parameters: {
                 type: "object",
                 properties: {
@@ -43,7 +43,7 @@ const tools = [
     }
 ];
 
-function buildSystemPrompt(sessionContext) {
+function buildSystemPrompt(sessionContext, isIntro = true) {
     const hasState = !!sessionContext?.profile?.state;
 
     let prompt = `You are Yojana AI, a warm, highly empathetic, and practical assistant for Indian government schemes.
@@ -55,26 +55,31 @@ CRITICAL TONE RULES:
 3. Accessible Language: Keep sentences short, warm, and free of dense bureaucratic jargon.
 
 CRITICAL OPERATIONAL RULES:
-1. DO NOT INVENT SCHEMES: Always use the \`search_schemes\` tool to fetch real data before recommending ANY scheme. Never hallucinate scheme names or policies.
-2. THE STATE REQUIREMENT: You cannot search for schemes reliably without knowing the user's State. If the user's State is completely unknown, you MUST ask them what state they live in before using the \`search_schemes\` tool.
-3. USING THE TOOL: When the user provides enough profile details, or asks for schemes, use the \`search_schemes\` tool. Merge the data they just provided with the Known Profile below.
+1. DELIVER SCHEMES IMMEDIATELY: If the user provides ANY piece of information (State, age, profession, need, category), you MUST IMMEDIATELY use the \`search_schemes\` tool. DO NOT ask them for missing profile fields (like income, caste, etc.) before running a search. Give them results first!
+2. NEVER INTERROGATE: If the user gives a short answer (e.g. "I'm SC", "list me all available"), update the profile and IMMEDIATELY use the \`search_schemes\` tool. DO NOT ask any follow-up questions.
+3. DO NOT INVENT SCHEMES: Always use the \`search_schemes\` tool to fetch real data before recommending ANY scheme. Never hallucinate scheme names or policies.
 4. HANDLE EMPTY RESULTS WARMLY: If \`search_schemes\` returns empty results, reply warmly: "I couldn't find exact schemes for your profile in that state right now, but please don't lose hope. We can try adjusting your details like category or occupation to look for others."
+5. FORMATTING THE LIST: When \`search_schemes\` returns results, present them clearly:
+    - Use Markdown lists with bold headings.
+    - Keep descriptions very brief (1-2 sentences max).
+    - Focus on the main benefits and eligibility.
 
 CURRENT SESSION STATE:
 - Known Profile So Far: ${JSON.stringify(sessionContext.profile || {})}
 - Currently Discussed Scheme: ${sessionContext.selectedScheme?.name || "None"}
 `;
 
-    if (!hasState) {
-        prompt += `\n[SYSTEM WARNING]: The user's State is currently UNKNOWN. You MUST warmly ask for their State before calling search_schemes! Include a validation statement first.`;
+    if (!hasState && sessionContext?.conversationState === "start") {
+        prompt += `\n[SYSTEM WARNING]: The user's State is currently UNKNOWN. Try to warmly ask for their State alongside your initial response!`;
     }
 
     return prompt;
 }
 
 async function runAgentTurn(conversationHistory, sessionContext) {
+    const isIntro = conversationHistory.length < 2;
     const messages = [
-        { role: "system", content: buildSystemPrompt(sessionContext) },
+        { role: "system", content: buildSystemPrompt(sessionContext, isIntro) },
         ...conversationHistory
     ];
 
