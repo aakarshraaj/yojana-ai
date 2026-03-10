@@ -147,7 +147,6 @@ function buildFocusedContext(match) {
 
   return `Focused Scheme Detail
 Name: ${match.name}
-Eligibility Probability: ${match.eligibilityProbability || "N/A"}%
 
 Description:
 ${sections.description.slice(0, 1000)}
@@ -190,7 +189,7 @@ function buildContext(matches) {
   return matches
     .map((m, i) => {
       const sections = extractSchemeSections(m);
-      return `\nScheme ${i + 1}\nName: ${m.name}\nSimilarity: ${m.similarity.toFixed(3)}\nEligibility Probability: ${m.eligibilityProbability}%\n\nDescription:\n${sections.description.slice(0, 700)}\n\nEligibility:\n${sections.eligibility.slice(0, 500)}\n\nBenefits:\n${sections.benefits.slice(0, 400)}\n`;
+      return `\nScheme ${i + 1}\nName: ${m.name}\nSimilarity: ${m.similarity.toFixed(3)}\n\nDescription:\n${sections.description.slice(0, 700)}\n\nEligibility:\n${sections.eligibility.slice(0, 500)}\n\nBenefits:\n${sections.benefits.slice(0, 400)}\n`;
     })
     .join("\n---------------------------------\n");
 }
@@ -199,10 +198,10 @@ function buildDeterministicList(matches, profileState = null) {
   const lines = [];
   const stateTitle = profileState
     ? profileState
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
     : null;
 
   lines.push(
@@ -214,7 +213,6 @@ function buildDeterministicList(matches, profileState = null) {
 
   matches.slice(0, 4).forEach((m, i) => {
     lines.push(`### ${i + 1}. ${m.name}`);
-    lines.push(`- **Eligibility:** ${m.eligibilityProbability}%`);
     lines.push("");
   });
 
