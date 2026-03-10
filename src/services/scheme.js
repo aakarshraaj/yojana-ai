@@ -475,4 +475,5 @@ module.exports = {
   buildDeterministicList,
   sanitizeAnswerWithMatches,
   buildContext,
+  extractSchemeSections,
 };
